@@ -1,0 +1,19 @@
+# String | ClickHouse Docs
+
+Source: https://clickhouse.com/docs/ru/sql-reference/data-types/string
+
+Строки произвольной длины. Длина не ограничена. Значение может содержать произвольный набор байт, включая байты нулевого значения.
+Тип String заменяет типы VARCHAR, BLOB, CLOB и другие типы из других СУБД.
+
+При создании таблиц для строковых полей можно задавать числовые параметры длины (например,VARCHAR(255)), но ClickHouse их игнорирует.
+
+Синонимы:
+
+- String—LONGTEXT,MEDIUMTEXT,TINYTEXT,TEXT,LONGBLOB,MEDIUMBLOB,TINYBLOB,BLOB,VARCHAR,CHAR,CHAR LARGE OBJECT,CHAR VARYING,CHARACTER LARGE OBJECT,CHARACTER VARYING,NCHAR LARGE OBJECT,NCHAR VARYING,NATIONAL CHARACTER LARGE OBJECT,NATIONAL CHARACTER VARYING,NATIONAL CHAR VARYING,NATIONAL CHARACTER,NATIONAL CHAR,BINARY LARGE OBJECT,BINARY VARYING,
+
+## Кодировки​
+
+В ClickHouse нет понятия кодировок. Строки могут содержать произвольный набор байтов, которые сохраняются и выводятся как есть.
+Если вам нужно хранить текст, мы рекомендуем использовать кодировку UTF-8. Как минимум, если ваш терминал использует UTF-8 (как и рекомендуется), вы сможете читать и записывать значения без выполнения преобразований.
+Аналогично, некоторые функции для работы со строками имеют отдельные варианты, рассчитанные на то, что строка содержит набор байтов, представляющих текст в кодировке UTF-8.
+Например, функцияlengthвычисляет длину строки в байтах, тогда как функцияlengthUTF8вычисляет длину строки в кодовых точках Unicode, предполагая, что значение закодировано в UTF-8.

@@ -1,0 +1,59 @@
+# Оператор SET ROLE | ClickHouse Docs
+
+Source: https://clickhouse.com/docs/ru/sql-reference/statements/set-role
+
+Активирует роли для текущего пользователя.
+
+
+```
+SET ROLE {DEFAULT | NONE | role [,...] | ALL | ALL EXCEPT role [,...]}
+
+```
+
+
+## SET DEFAULT ROLE​
+
+Устанавливает роли по умолчанию для пользователя.
+
+Роли по умолчанию автоматически активируются при входе пользователя в систему. В качестве ролей по умолчанию можно указать только ранее назначенные роли. Если роль не назначена пользователю, ClickHouse выбрасывает исключение.
+
+
+```
+SET DEFAULT ROLE {NONE | role [,...] | ALL | ALL EXCEPT role [,...]} TO {user|CURRENT_USER} [,...]
+
+```
+
+
+## Примеры​
+
+Назначение пользователю нескольких ролей по умолчанию:
+
+
+```
+SET DEFAULT ROLE role1, role2, ... TO user
+
+```
+
+Назначьте все выданные роли ролями по умолчанию для пользователя:
+
+
+```
+SET DEFAULT ROLE ALL TO user
+
+```
+
+Удалить у пользователя роли по умолчанию:
+
+
+```
+SET DEFAULT ROLE NONE TO user
+
+```
+
+Сделайте все выданные роли ролями по умолчанию, кроме ролейrole1иrole2:
+
+
+```
+SET DEFAULT ROLE ALL EXCEPT role1, role2 TO user
+
+```
