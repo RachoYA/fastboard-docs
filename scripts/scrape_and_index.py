@@ -9,11 +9,13 @@ import requests
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin, urlparse
 import chromadb
-from chromadb.utils import embedding_functions
-
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DOCS_DIR = os.path.join(BASE_DIR, "docs")
-VECTORDB_DIR = os.path.join(BASE_DIR, "vectordb")
+from rag_common import (
+    BASE_DIR,
+    DOCS_DIR,
+    VECTORDB_DIR,
+    EMBEDDING_MODEL,
+    OpenRouterEmbeddingFunction,
+)
 
 os.makedirs(os.path.join(DOCS_DIR, "fastboard"), exist_ok=True)
 os.makedirs(os.path.join(DOCS_DIR, "clickhouse"), exist_ok=True)
@@ -146,9 +148,10 @@ def index_docs(results, collection):
 def main():
     print("=== Fastboard & ClickHouse Docs Indexer ===\n")
 
-    # ChromaDB setup
+    # ChromaDB setup — эмбеддинги считаются через OpenRouter
     client = chromadb.PersistentClient(path=VECTORDB_DIR)
-    ef = embedding_functions.DefaultEmbeddingFunction()
+    ef = OpenRouterEmbeddingFunction()
+    print(f"🔌 Эмбеддинги через OpenRouter: {EMBEDDING_MODEL}\n")
 
     # Delete existing collections to re-index fresh
     for name in ["fastboard_docs", "clickhouse_docs"]:

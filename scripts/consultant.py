@@ -1,0 +1,143 @@
+#!/usr/bin/env python3
+"""AI-консультант по документации Fastboard и ClickHouse (RAG поверх OpenRouter).
+
+Принимает вопрос, ищет релевантные фрагменты в ChromaDB (эмбеддинги OpenRouter)
+и генерирует ответ чат-моделью через OpenRouter.
+
+Примеры:
+    python scripts/consultant.py "Как создать дашборд в Fastboard?"
+    python scripts/consultant.py --source clickhouse "Что такое движок MergeTree?"
+    python scripts/consultant.py            # интерактивный режим
+"""
+
+import argparse
+import sys
+
+import chromadb
+
+from rag_common import (
+    VECTORDB_DIR,
+    CHAT_MODEL,
+    EMBEDDING_MODEL,
+    get_client,
+    OpenRouterEmbeddingFunction,
+)
+
+COLLECTIONS = {
+    "fastboard": "fastboard_docs",
+    "clickhouse": "clickhouse_docs",
+}
+
+SYSTEM_PROMPT = (
+    "Ты — AI-консультант по платформе Fastboard (BI) и базе данных ClickHouse. "
+    "Отвечай на русском языке, точно и по делу, опираясь ТОЛЬКО на приведённый ниже "
+    "контекст из документации. Если в контексте нет ответа — честно скажи об этом и "
+    "не выдумывай. Где уместно, приводи примеры SQL и ссылайся на источники (URL) "
+    "из контекста."
+)
+
+
+def retrieve(collection, query: str, top_k: int):
+    """Возвращает список фрагментов: (документ, метаданные, расстояние)."""
+    res = collection.query(query_texts=[query], n_results=top_k)
+    docs = res.get("documents", [[]])[0]
+    metas = res.get("metadatas", [[]])[0]
+    dists = res.get("distances", [[]])[0] or [None] * len(docs)
+    return list(zip(docs, metas, dists))
+
+
+def build_context(chunks):
+    """Формирует текст контекста и список источников."""
+    blocks = []
+    sources = []
+    for i, (doc, meta, _dist) in enumerate(chunks, 1):
+        url = (meta or {}).get("url", "неизвестно")
+        blocks.append(f"[Фрагмент {i}] Источник: {url}\n{doc}")
+        if url not in sources:
+            sources.append(url)
+    return "\n\n---\n\n".join(blocks), sources
+
+
+def answer(question: str, sources_filter: str, top_k: int, model: str) -> str:
+    ef = OpenRouterEmbeddingFunction()
+    chroma = chromadb.PersistentClient(path=VECTORDB_DIR)
+
+    targets = (
+        list(COLLECTIONS.values())
+        if sources_filter == "both"
+        else [COLLECTIONS[sources_filter]]
+    )
+
+    chunks = []
+    for name in targets:
+        try:
+            col = chroma.get_collection(name, embedding_function=ef)
+        except Exception:
+            print(
+                f"⚠️  Коллекция '{name}' не найдена. Сначала запустите индексацию:\n"
+                f"    python scripts/scrape_and_index.py",
+                file=sys.stderr,
+            )
+            continue
+        chunks.extend(retrieve(col, question, top_k))
+
+    if not chunks:
+        return "Не нашёл релевантных данных. Проверьте, что база проиндексирована (scripts/scrape_and_index.py)."
+
+    # самые близкие сверху (меньше расстояние = ближе); None — в конец
+    chunks.sort(key=lambda c: (c[2] is None, c[2] if c[2] is not None else 0))
+    chunks = chunks[:top_k]
+
+    context, sources = build_context(chunks)
+    user_msg = f"Вопрос: {question}\n\nКонтекст из документации:\n\n{context}"
+
+    client = get_client()
+    resp = client.chat.completions.create(
+        model=model,
+        messages=[
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": user_msg},
+        ],
+        temperature=0.2,
+    )
+    reply = resp.choices[0].message.content
+
+    if sources:
+        reply += "\n\n📚 Источники:\n" + "\n".join(f"  - {s}" for s in sources)
+    return reply
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="AI-консультант по документации Fastboard и ClickHouse (OpenRouter)."
+    )
+    parser.add_argument("question", nargs="*", help="Вопрос. Без аргументов — интерактивный режим.")
+    parser.add_argument(
+        "--source",
+        choices=["fastboard", "clickhouse", "both"],
+        default="both",
+        help="В каких коллекциях искать (по умолчанию: both).",
+    )
+    parser.add_argument("--top-k", type=int, default=6, help="Сколько фрагментов брать в контекст.")
+    parser.add_argument("--model", default=CHAT_MODEL, help="Модель OpenRouter для ответа.")
+    args = parser.parse_args()
+
+    print(f"🤖 Консультант: чат={args.model}, эмбеддинги={EMBEDDING_MODEL}\n")
+
+    if args.question:
+        print(answer(" ".join(args.question), args.source, args.top_k, args.model))
+        return
+
+    print("Интерактивный режим. Пустая строка или Ctrl+C — выход.\n")
+    try:
+        while True:
+            q = input("❓ Вопрос: ").strip()
+            if not q:
+                break
+            print("\n" + answer(q, args.source, args.top_k, args.model) + "\n")
+    except (KeyboardInterrupt, EOFError):
+        print("\nДо встречи!")
+
+
+if __name__ == "__main__":
+    main()

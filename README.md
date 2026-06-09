@@ -45,8 +45,44 @@ docs/
 - Обучения моделей
 - Справочника по API
 
-## Обновление
+## AI-консультант (OpenRouter)
+
+Эмбеддинги для RAG и ответы консультанта работают через [OpenRouter](https://openrouter.ai)
+(единый OpenAI-совместимый API).
+
+### Установка
+
+```bash
+pip install -r requirements.txt
+cp .env.example .env   # впишите OPENROUTER_API_KEY
+```
+
+Модели настраиваются в `.env`:
+
+| Переменная | Назначение | По умолчанию |
+|---|---|---|
+| `OPENROUTER_API_KEY` | Ключ API OpenRouter | — |
+| `OPENROUTER_CHAT_MODEL` | Модель ответов | `anthropic/claude-3.5-sonnet` |
+| `OPENROUTER_EMBEDDING_MODEL` | Модель эмбеддингов | `openai/text-embedding-3-small` |
+
+### Индексация
 
 ```bash
 python scripts/scrape_and_index.py
+```
+
+> Скрипт заново скрапит документацию и строит векторную базу `vectordb/` на
+> эмбеддингах OpenRouter. При смене модели эмбеддингов индекс нужно пересобрать.
+
+### Запрос к консультанту
+
+```bash
+# одиночный вопрос
+python scripts/consultant.py "Как создать дашборд в Fastboard?"
+
+# поиск только по ClickHouse
+python scripts/consultant.py --source clickhouse "Что такое движок MergeTree?"
+
+# интерактивный режим
+python scripts/consultant.py
 ```
