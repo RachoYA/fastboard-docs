@@ -1,0 +1,11 @@
+[Unit]
+Description=Fastboard/ClickHouse docs incremental update
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# Поправьте путь и пользователя под свой сервер
+User=fastboard
+WorkingDirectory=/opt/fastboard-docs
+ExecStart=/opt/fastboard-docs/scripts/daily_update.sh
