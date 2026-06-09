@@ -5,3 +5,4 @@ vectordb/
 .env
 .venv/
 venv/
+logs/

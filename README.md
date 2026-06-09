@@ -65,14 +65,41 @@ cp .env.example .env   # впишите OPENROUTER_API_KEY
 | `OPENROUTER_CHAT_MODEL` | Модель ответов | `anthropic/claude-3.5-sonnet` |
 | `OPENROUTER_EMBEDDING_MODEL` | Модель эмбеддингов | `openai/text-embedding-3-small` |
 
-### Индексация
+### Индексация (инкрементальная)
 
 ```bash
-python scripts/scrape_and_index.py
+python scripts/scrape_and_index.py            # обновить только изменившееся
+python scripts/scrape_and_index.py --full     # полная пересборка с нуля
+python scripts/scrape_and_index.py --prune    # ещё и удалить исчезнувшие страницы
 ```
 
-> Скрипт заново скрапит документацию и строит векторную базу `vectordb/` на
-> эмбеддингах OpenRouter. При смене модели эмбеддингов индекс нужно пересобрать.
+- **Инкремент.** По умолчанию обновляются и переиндексируются только
+  изменившиеся страницы. Состояние (хэш каждой страницы) хранится в
+  `scrape_manifest.json` — за счёт него выводится «дельта» за запуск.
+- **Ссылки и картинки.** При конвертации в Markdown сохраняются гиперссылки
+  `[текст](url)` и изображения `![alt](src)` с абсолютными адресами.
+- **Источники данных:** Fastboard — `help.fastboard.online/user/`;
+  ClickHouse — разделы `clickhouse.com/docs/ru/` (типы, функции, движки,
+  операторы, getting-started).
+
+> Векторная база `vectordb/` не хранится в git. При смене модели эмбеддингов
+> запустите `--full`. Если база пуста (например, потерян кэш в CI), полная
+> индексация выполняется автоматически.
+
+### Ежедневное обновление (на сервере)
+
+Инкремент запускается на вашем сервере по расписанию. На диске сохраняются
+`vectordb/`, `scrape_manifest.json` и markdown — поэтому каждый день
+обрабатывается только дельта.
+
+```bash
+# cron — ежедневно в 03:00
+0 3 * * * /opt/fastboard-docs/scripts/daily_update.sh
+```
+
+Обёртка `scripts/daily_update.sh` сама подхватывает `.venv` и `.env` и пишет
+логи в `logs/`. Готовые unit-файлы для systemd и подробная инструкция — в
+[`deploy/`](deploy/README.md).
 
 ### Запрос к консультанту
 
