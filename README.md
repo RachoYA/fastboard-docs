@@ -62,7 +62,7 @@ cp .env.example .env   # впишите OPENROUTER_API_KEY
 | Переменная | Назначение | По умолчанию |
 |---|---|---|
 | `OPENROUTER_API_KEY` | Ключ API OpenRouter | — |
-| `OPENROUTER_CHAT_MODEL` | Модель ответов | `anthropic/claude-3.5-sonnet` |
+| `OPENROUTER_CHAT_MODEL` | Модель ответов | `anthropic/claude-sonnet-4.5` |
 | `OPENROUTER_EMBEDDING_MODEL` | Модель эмбеддингов | `openai/text-embedding-3-small` |
 
 ### Индексация (инкрементальная)

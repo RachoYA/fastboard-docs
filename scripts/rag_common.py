@@ -26,7 +26,7 @@ VECTORDB_DIR = os.path.join(BASE_DIR, "vectordb")
 # --- Конфигурация OpenRouter ---
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
 OPENROUTER_BASE_URL = os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
-CHAT_MODEL = os.environ.get("OPENROUTER_CHAT_MODEL", "anthropic/claude-3.5-sonnet")
+CHAT_MODEL = os.environ.get("OPENROUTER_CHAT_MODEL", "anthropic/claude-sonnet-4.5")
 EMBEDDING_MODEL = os.environ.get("OPENROUTER_EMBEDDING_MODEL", "openai/text-embedding-3-small")
 
 # Сетевые параметры (ретраи/таймаут для устойчивости к 429/5xx/сетевым сбоям)
