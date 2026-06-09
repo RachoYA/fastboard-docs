@@ -48,6 +48,15 @@ HEADERS = {
 # Теги, внутри которых ссылки/картинки рендерятся как инлайн (не дублируются).
 INLINE_PARENTS = {"p", "li", "h1", "h2", "h3", "h4", "a", "figcaption", "td", "th"}
 
+# Блочные теги: их рендерит основной цикл по descendants. render_inline НЕ должен
+# рекурсивно входить в них, иначе вложенные блоки (напр. <ul> внутри <li> или <p>)
+# попадут в вывод дважды.
+BLOCK_TAGS = {
+    "p", "div", "section", "article", "ul", "ol", "li", "pre", "table",
+    "thead", "tbody", "tr", "td", "th", "blockquote", "figure", "dl",
+    "h1", "h2", "h3", "h4", "h5", "h6",
+}
+
 
 def slugify(url):
     path = urlparse(url).path.strip("/").replace("/", "_")
@@ -63,15 +72,36 @@ def _norm_href(href, base_url):
     return urljoin(base_url, href)
 
 
-def render_inline(elem, base_url):
-    """Преобразует инлайн-содержимое элемента в Markdown с ссылками и картинками."""
+def _img_src(tag, base_url):
+    """Извлекает адрес картинки, учитывая ленивую загрузку и srcset."""
+    raw = (
+        tag.get("src")
+        or tag.get("data-src")
+        or tag.get("data-original")
+        or tag.get("data-lazy-src")
+    )
+    if not raw:
+        srcset = tag.get("srcset") or tag.get("data-srcset")
+        if srcset:
+            # первый кандидат из srcset: "url 1x, url2 2x"
+            raw = srcset.split(",")[0].strip().split(" ")[0]
+    return _norm_href(raw, base_url)
+
+
+def render_inline(elem, base_url, descend_blocks=False):
+    """Преобразует инлайн-содержимое элемента в Markdown с ссылками и картинками.
+
+    descend_blocks=True — рекурсивно входить и в блочные теги (нужно для ячеек
+    таблиц, где содержимое часто завёрнуто в <p>/<div>). По умолчанию блоки
+    пропускаются: их рендерит основной цикл по descendants (иначе будет дубль).
+    """
     parts = []
     for child in elem.children:
         name = getattr(child, "name", None)
         if name is None:
             parts.append(str(child))
         elif name == "a":
-            text = render_inline(child, base_url) or child.get_text(strip=True)
+            text = render_inline(child, base_url, descend_blocks) or child.get_text(strip=True)
             href = _norm_href(child.get("href"), base_url)
             if href and text:
                 parts.append(f"[{text}]({href})")
@@ -80,21 +110,47 @@ def render_inline(elem, base_url):
             else:
                 parts.append(text)
         elif name == "img":
-            src = _norm_href(child.get("src") or child.get("data-src"), base_url)
-            alt = child.get("alt", "")
+            src = _img_src(child, base_url)
             if src:
-                parts.append(f"![{alt}]({src})")
+                parts.append(f"![{child.get('alt', '')}]({src})")
         elif name == "code":
             parts.append(f"`{child.get_text()}`")
         elif name in ("strong", "b"):
-            parts.append(f"**{render_inline(child, base_url)}**")
+            parts.append(f"**{render_inline(child, base_url, descend_blocks)}**")
         elif name in ("em", "i"):
-            parts.append(f"*{render_inline(child, base_url)}*")
+            parts.append(f"*{render_inline(child, base_url, descend_blocks)}*")
         elif name == "br":
             parts.append(" ")
+        elif name in BLOCK_TAGS:
+            if descend_blocks:
+                parts.append(" " + render_inline(child, base_url, True) + " ")
+            else:
+                # вложенный блок обработает основной цикл — пропускаем, чтобы не дублировать
+                continue
         else:
-            parts.append(render_inline(child, base_url))
+            parts.append(render_inline(child, base_url, descend_blocks))
     return re.sub(r"\s+", " ", "".join(parts)).strip()
+
+
+def render_table(table, base_url):
+    """Преобразует <table> в Markdown-таблицу (с экранированием '|')."""
+    rows = []
+    for tr in table.find_all("tr"):
+        cells = tr.find_all(["th", "td"], recursive=False) or tr.find_all(["th", "td"])
+        if not cells:
+            continue
+        rows.append([render_inline(c, base_url, descend_blocks=True).replace("|", "\\|")
+                     for c in cells])
+    if not rows:
+        return ""
+    width = max(len(r) for r in rows)
+    rows = [r + [""] * (width - len(r)) for r in rows]
+    header = rows[0]
+    out = ["| " + " | ".join(header) + " |",
+           "| " + " | ".join(["---"] * width) + " |"]
+    for r in rows[1:]:
+        out.append("| " + " | ".join(r) + " |")
+    return "\n".join(out)
 
 
 def html_to_markdown(soup, base_url):
@@ -115,6 +171,9 @@ def html_to_markdown(soup, base_url):
     for elem in content.descendants:
         if not hasattr(elem, "name") or elem.name is None:
             continue
+        # <table>/<pre> рендерятся целиком — их потомков пропускаем, чтобы не дублировать
+        if elem.find_parent(["table", "pre"]) is not None:
+            continue
         if elem.name in ("h1", "h2", "h3", "h4"):
             level = int(elem.name[1])
             text = render_inline(elem, base_url)
@@ -131,15 +190,18 @@ def html_to_markdown(soup, base_url):
         elif elem.name == "pre":
             code = elem.get_text()
             lines.append(f"\n```\n{code}\n```\n")
+        elif elem.name == "table":
+            md_table = render_table(elem, base_url)
+            if md_table:
+                lines.append("\n" + md_table + "\n")
         elif elem.name == "img":
             # Картинки, не вложенные в обрабатываемые инлайн-блоки — отдельной строкой
             parent_name = elem.parent.name if elem.parent is not None else None
             if parent_name in INLINE_PARENTS:
                 continue
-            src = _norm_href(elem.get("src") or elem.get("data-src"), base_url)
+            src = _img_src(elem, base_url)
             if src:
-                alt = elem.get("alt", "")
-                lines.append(f"\n![{alt}]({src})\n")
+                lines.append(f"\n![{elem.get('alt', '')}]({src})\n")
 
     return "\n".join(lines)
 
@@ -191,11 +253,12 @@ def crawl(start_url, domain_filter, max_pages=200, delay=0.5):
 def chunk_text(text, chunk_size=800, overlap=100):
     """Разбивает текст на перекрывающиеся чанки."""
     words = text.split()
+    step = max(1, chunk_size - overlap)  # защита от бесконечного цикла при overlap >= chunk_size
     chunks = []
     i = 0
     while i < len(words):
         chunks.append(" ".join(words[i:i + chunk_size]))
-        i += chunk_size - overlap
+        i += step
     return chunks
 
 
@@ -295,10 +358,21 @@ def main():
 
     manifest = {"version": 1, "updated": None, "pages": {}} if args.full else load_manifest()
 
+    # Смена модели эмбеддингов делает старые векторы несовместимыми (другая
+    # размерность) — в этом случае нужна полная пересборка.
+    prev_model = manifest.get("embedding_model")
+    model_changed = prev_model is not None and prev_model != EMBEDDING_MODEL
+    full = args.full or model_changed
+    if model_changed:
+        print(f"⚠️  Модель эмбеддингов изменилась ({prev_model} → {EMBEDDING_MODEL}). "
+              f"Выполняю полную пересборку.\n")
+        manifest = {"version": 1, "updated": None, "pages": {}}
+    manifest["embedding_model"] = EMBEDDING_MODEL
+
     client = chromadb.PersistentClient(path=VECTORDB_DIR)
     ef = OpenRouterEmbeddingFunction()
 
-    if args.full:
+    if full:
         for name in ["fastboard_docs", "clickhouse_docs"]:
             try:
                 client.delete_collection(name)
@@ -308,10 +382,13 @@ def main():
     fb_col = client.get_or_create_collection("fastboard_docs", embedding_function=ef)
     ch_col = client.get_or_create_collection("clickhouse_docs", embedding_function=ef)
 
-    # Если база пуста (например, кэш потерян в CI) — форсируем полную индексацию,
-    # даже в инкрементальном режиме, чтобы не остаться с пустым индексом.
-    fb_force = args.full or fb_col.count() == 0
-    ch_force = args.full or ch_col.count() == 0
+    # Если база пуста (например, потерян том vectordb) — форсируем полную
+    # индексацию, даже в инкрементальном режиме, чтобы не остаться с пустым индексом.
+    fb_force = full or fb_col.count() == 0
+    ch_force = full or ch_col.count() == 0
+    if (fb_force or ch_force) and not args.full:
+        print("ℹ️  Обнаружена пустая/несовместимая база — будет переиндексировано всё "
+              "(возможен повышенный расход эмбеддингов).\n")
 
     # --- Fastboard ---
     print("📄 Обход Fastboard...")
@@ -327,6 +404,7 @@ def main():
     )
     print(f"✅ Fastboard: обход {len(fb_crawled)}, обновлено {fb_stats['changed']}, "
           f"без изменений {fb_stats['skipped']}, удалено {fb_stats['removed']}")
+    save_manifest(manifest)  # durability: фиксируем прогресс до обхода ClickHouse
 
     # --- ClickHouse ---
     print("\n📄 Обход ClickHouse (ru)...")

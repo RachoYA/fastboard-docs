@@ -6,3 +6,4 @@ vectordb/
 .venv/
 venv/
 logs/
+.daily_update.lock

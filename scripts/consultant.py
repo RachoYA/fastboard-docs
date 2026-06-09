@@ -40,9 +40,9 @@ SYSTEM_PROMPT = (
 def retrieve(collection, query: str, top_k: int):
     """Возвращает список фрагментов: (документ, метаданные, расстояние)."""
     res = collection.query(query_texts=[query], n_results=top_k)
-    docs = res.get("documents", [[]])[0]
-    metas = res.get("metadatas", [[]])[0]
-    dists = res.get("distances", [[]])[0] or [None] * len(docs)
+    docs = (res.get("documents") or [[]])[0]
+    metas = (res.get("metadatas") or [[]])[0]
+    dists = (res.get("distances") or [[]])[0] or [None] * len(docs)
     return list(zip(docs, metas, dists))
 
 
@@ -58,53 +58,63 @@ def build_context(chunks):
     return "\n\n---\n\n".join(blocks), sources
 
 
-def answer(question: str, sources_filter: str, top_k: int, model: str) -> str:
-    ef = OpenRouterEmbeddingFunction()
-    chroma = chromadb.PersistentClient(path=VECTORDB_DIR)
+class Consultant:
+    """Держит клиентов OpenRouter/ChromaDB, чтобы не пересоздавать их на каждый вопрос."""
 
-    targets = (
-        list(COLLECTIONS.values())
-        if sources_filter == "both"
-        else [COLLECTIONS[sources_filter]]
-    )
+    def __init__(self):
+        self.ef = OpenRouterEmbeddingFunction()
+        self.chroma = chromadb.PersistentClient(path=VECTORDB_DIR)
+        self.client = get_client()
 
-    chunks = []
-    for name in targets:
-        try:
-            col = chroma.get_collection(name, embedding_function=ef)
-        except Exception:
-            print(
-                f"⚠️  Коллекция '{name}' не найдена. Сначала запустите индексацию:\n"
-                f"    python scripts/scrape_and_index.py",
-                file=sys.stderr,
-            )
-            continue
-        chunks.extend(retrieve(col, question, top_k))
+    def answer(self, question: str, sources_filter: str, top_k: int, model: str) -> str:
+        targets = (
+            list(COLLECTIONS.values())
+            if sources_filter == "both"
+            else [COLLECTIONS[sources_filter]]
+        )
 
-    if not chunks:
-        return "Не нашёл релевантных данных. Проверьте, что база проиндексирована (scripts/scrape_and_index.py)."
+        chunks = []
+        missing = []
+        for name in targets:
+            try:
+                col = self.chroma.get_collection(name, embedding_function=self.ef)
+            except Exception:
+                missing.append(name)
+                print(
+                    f"⚠️  Коллекция '{name}' не найдена. Сначала запустите индексацию:\n"
+                    f"    python scripts/scrape_and_index.py",
+                    file=sys.stderr,
+                )
+                continue
+            chunks.extend(retrieve(col, question, top_k))
 
-    # самые близкие сверху (меньше расстояние = ближе); None — в конец
-    chunks.sort(key=lambda c: (c[2] is None, c[2] if c[2] is not None else 0))
-    chunks = chunks[:top_k]
+        if not chunks:
+            return ("Не нашёл релевантных данных. Проверьте, что база проиндексирована "
+                    "(scripts/scrape_and_index.py).")
 
-    context, sources = build_context(chunks)
-    user_msg = f"Вопрос: {question}\n\nКонтекст из документации:\n\n{context}"
+        # самые близкие сверху (меньше расстояние = ближе); None — в конец
+        chunks.sort(key=lambda c: (c[2] is None, c[2] if c[2] is not None else 0))
+        chunks = chunks[:top_k]
 
-    client = get_client()
-    resp = client.chat.completions.create(
-        model=model,
-        messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": user_msg},
-        ],
-        temperature=0.2,
-    )
-    reply = resp.choices[0].message.content
+        context, sources = build_context(chunks)
+        user_msg = f"Вопрос: {question}\n\nКонтекст из документации:\n\n{context}"
 
-    if sources:
-        reply += "\n\n📚 Источники:\n" + "\n".join(f"  - {s}" for s in sources)
-    return reply
+        resp = self.client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": user_msg},
+            ],
+            temperature=0.2,
+        )
+        reply = resp.choices[0].message.content or ""
+
+        if missing:
+            reply = (f"⚠️ Часть источников недоступна ({', '.join(missing)}) — "
+                     f"ответ может быть неполным.\n\n" + reply)
+        if sources:
+            reply += "\n\n📚 Источники:\n" + "\n".join(f"  - {s}" for s in sources)
+        return reply
 
 
 def main():
@@ -124,8 +134,10 @@ def main():
 
     print(f"🤖 Консультант: чат={args.model}, эмбеддинги={EMBEDDING_MODEL}\n")
 
+    consultant = Consultant()
+
     if args.question:
-        print(answer(" ".join(args.question), args.source, args.top_k, args.model))
+        print(consultant.answer(" ".join(args.question), args.source, args.top_k, args.model))
         return
 
     print("Интерактивный режим. Пустая строка или Ctrl+C — выход.\n")
@@ -134,7 +146,7 @@ def main():
             q = input("❓ Вопрос: ").strip()
             if not q:
                 break
-            print("\n" + answer(q, args.source, args.top_k, args.model) + "\n")
+            print("\n" + consultant.answer(q, args.source, args.top_k, args.model) + "\n")
     except (KeyboardInterrupt, EOFError):
         print("\nДо встречи!")
 

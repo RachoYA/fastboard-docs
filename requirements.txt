@@ -1,5 +1,5 @@
 requests>=2.31
 beautifulsoup4>=4.12
-chromadb>=0.5
+chromadb>=1.0,<2
 openai>=1.0
 python-dotenv>=1.0

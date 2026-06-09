@@ -47,3 +47,23 @@ journalctl -u fastboard-docs-update.service -n 50
 ./scripts/daily_update.sh --full     # полная пересборка
 ./scripts/daily_update.sh --prune    # удалять исчезнувшие страницы
 ```
+
+Скрипт берёт `flock` на `.daily_update.lock`, поэтому параллельный запуск
+(cron + ручной) безопасен — второй процесс просто завершится, не повредив
+векторную базу.
+
+## Ротация логов
+
+Логи пишутся по файлу в день в `logs/` и не чистятся автоматически. Пример
+`logrotate` (`/etc/logrotate.d/fastboard-docs`):
+
+```
+/opt/fastboard-docs/logs/*.log {
+    weekly
+    rotate 8
+    compress
+    missingok
+    notifempty
+}
+```
+
