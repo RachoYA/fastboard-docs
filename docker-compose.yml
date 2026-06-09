@@ -1,0 +1,45 @@
+# Прод-развёртывание: Telegram-бот + ежедневный индексатор + ChromaDB-сервер.
+# Запуск:  cp .env.example .env  &&  docker compose up -d --build
+# Логи:    docker compose logs -f bot
+services:
+  chroma:
+    image: chromadb/chroma:latest   # после первого успешного деплоя рекомендуется зафиксировать версию
+    restart: unless-stopped
+    environment:
+      - IS_PERSISTENT=TRUE
+      - ANONYMIZED_TELEMETRY=FALSE
+    volumes:
+      - chroma-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'cat < /dev/null > /dev/tcp/localhost/8000'"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  bot:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      - CHROMA_HOST=chroma
+      - CHROMA_PORT=8000
+    depends_on:
+      chroma:
+        condition: service_healthy
+    command: python scripts/telegram_bot.py
+
+  indexer:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      - CHROMA_HOST=chroma
+      - CHROMA_PORT=8000
+      - INDEX_HOUR_UTC=3
+    depends_on:
+      chroma:
+        condition: service_healthy
+    command: python scripts/run_scheduler.py
+
+volumes:
+  chroma-data:

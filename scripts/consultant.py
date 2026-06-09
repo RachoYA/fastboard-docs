@@ -13,13 +13,11 @@
 import argparse
 import sys
 
-import chromadb
-
 from rag_common import (
-    VECTORDB_DIR,
     CHAT_MODEL,
     EMBEDDING_MODEL,
     get_client,
+    get_chroma_client,
     OpenRouterEmbeddingFunction,
 )
 
@@ -63,7 +61,7 @@ class Consultant:
 
     def __init__(self):
         self.ef = OpenRouterEmbeddingFunction()
-        self.chroma = chromadb.PersistentClient(path=VECTORDB_DIR)
+        self.chroma = get_chroma_client()
         self.client = get_client()
 
     def answer(self, question: str, sources_filter: str, top_k: int, model: str) -> str:

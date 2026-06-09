@@ -1,0 +1,12 @@
+.git
+.gitignore
+.venv
+venv
+__pycache__
+*.pyc
+vectordb
+logs
+.env
+.daily_update.lock
+*.md
+deploy

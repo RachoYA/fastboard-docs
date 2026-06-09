@@ -26,20 +26,19 @@ import requests
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin, urlparse
 
-import chromadb
 from rag_common import (
     BASE_DIR,
     DOCS_DIR,
     VECTORDB_DIR,
     EMBEDDING_MODEL,
     OpenRouterEmbeddingFunction,
+    get_chroma_client,
 )
 
 os.makedirs(os.path.join(DOCS_DIR, "fastboard"), exist_ok=True)
 os.makedirs(os.path.join(DOCS_DIR, "clickhouse"), exist_ok=True)
-os.makedirs(VECTORDB_DIR, exist_ok=True)
 
-MANIFEST_PATH = os.path.join(BASE_DIR, "scrape_manifest.json")
+MANIFEST_PATH = os.environ.get("MANIFEST_PATH", os.path.join(BASE_DIR, "scrape_manifest.json"))
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (compatible; FastboardDocsBot/1.0)"
@@ -369,7 +368,7 @@ def main():
         manifest = {"version": 1, "updated": None, "pages": {}}
     manifest["embedding_model"] = EMBEDDING_MODEL
 
-    client = chromadb.PersistentClient(path=VECTORDB_DIR)
+    client = get_chroma_client()
     ef = OpenRouterEmbeddingFunction()
 
     if full:

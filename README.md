@@ -113,3 +113,22 @@ python scripts/consultant.py --source clickhouse "Что такое движок
 # интерактивный режим
 python scripts/consultant.py
 ```
+
+## Прод: Telegram-бот в Docker
+
+Готовое окружение из трёх сервисов: **бот** (Telegram, polling), **индексатор**
+(ежедневный инкремент) и **ChromaDB-сервер** (общая векторная база — бот читает,
+индексатор пишет, без конфликтов за файл).
+
+```bash
+cp .env.example .env          # впишите OPENROUTER_API_KEY и TELEGRAM_BOT_TOKEN
+docker compose up -d --build
+docker compose logs -f bot
+```
+
+- Токен бота — у [@BotFather](https://t.me/BotFather).
+- Индексатор делает первый прогон при старте (полная сборка на пустой базе),
+  далее — ежедневно в `INDEX_HOUR_UTC`.
+- Векторная база живёт в volume `chroma-data` и переживает перезапуски.
+
+Подробности и не-Docker вариант (systemd/cron) — в [`deploy/`](deploy/README.md).

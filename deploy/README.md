@@ -1,6 +1,40 @@
-# Развёртывание ежедневного обновления на сервере
+# Развёртывание на сервере
 
-Ежедневный инкремент запускается на вашем сервере (не на GitHub). Состояние —
+Рекомендуемый способ — **Docker Compose** (бот + индексатор + ChromaDB).
+Ниже также описан вариант без Docker (cron/systemd) только для индексатора.
+
+## Вариант 0 (рекомендуемый). Docker Compose: бот + индексатор + ChromaDB
+
+```bash
+cd /opt/fastboard-docs
+cp .env.example .env          # OPENROUTER_API_KEY, TELEGRAM_BOT_TOKEN
+docker compose up -d --build
+
+docker compose ps
+docker compose logs -f bot          # логи бота
+docker compose logs -f indexer      # логи индексации
+```
+
+Сервисы (`docker-compose.yml`):
+- **chroma** — ChromaDB-сервер, данные в volume `chroma-data`.
+- **bot** — Telegram-бот (polling), отвечает на вопросы пользователей.
+- **indexer** — ежедневная инкрементальная индексация (`INDEX_HOUR_UTC`, по умолч. 03:00 UTC).
+
+Полезное:
+```bash
+docker compose run --rm indexer python scripts/scrape_and_index.py --full   # ручная полная пересборка
+docker compose restart bot
+docker compose down                  # остановить (volume с базой сохранится)
+```
+
+> После первого успешного деплоя зафиксируйте версию образа `chromadb/chroma`
+> в `docker-compose.yml` вместо `latest`.
+
+---
+
+## Только индексатор без Docker (cron/systemd)
+
+Если Telegram-бот не нужен и достаточно ежедневно обновлять базу. Состояние —
 `vectordb/`, `scrape_manifest.json` и markdown-файлы — хранится на диске и
 переиспользуется между запусками, поэтому каждый день обрабатывается только
 изменившаяся «дельта».

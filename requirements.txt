@@ -3,3 +3,4 @@ beautifulsoup4>=4.12
 chromadb>=1.0,<2
 openai>=1.0
 python-dotenv>=1.0
+python-telegram-bot>=21,<22

@@ -16,12 +16,18 @@ try:
 except ImportError:
     pass
 
+import chromadb
 from chromadb import Documents, EmbeddingFunction, Embeddings
 
 # --- Пути ---
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DOCS_DIR = os.path.join(BASE_DIR, "docs")
-VECTORDB_DIR = os.path.join(BASE_DIR, "vectordb")
+VECTORDB_DIR = os.environ.get("VECTORDB_DIR", os.path.join(BASE_DIR, "vectordb"))
+
+# Режим ChromaDB: если задан CHROMA_HOST — клиент-серверный режим (для Docker),
+# иначе локальный файловый PersistentClient (для CLI/одиночного запуска).
+CHROMA_HOST = os.environ.get("CHROMA_HOST", "")
+CHROMA_PORT = int(os.environ.get("CHROMA_PORT", "8000"))
 
 # --- Конфигурация OpenRouter ---
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
@@ -64,6 +70,14 @@ def get_client():
         timeout=OPENROUTER_TIMEOUT,
         default_headers={"HTTP-Referer": _HTTP_REFERER, "X-Title": _X_TITLE},
     )
+
+
+def get_chroma_client():
+    """Возвращает клиент ChromaDB: HTTP-сервер (если задан CHROMA_HOST) или локальный."""
+    if CHROMA_HOST:
+        return chromadb.HttpClient(host=CHROMA_HOST, port=CHROMA_PORT)
+    os.makedirs(VECTORDB_DIR, exist_ok=True)
+    return chromadb.PersistentClient(path=VECTORDB_DIR)
 
 
 class OpenRouterEmbeddingFunction(EmbeddingFunction[Documents]):
