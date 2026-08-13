@@ -9,9 +9,7 @@
 Запускается как systemd-сервис, см. deploy/.
 """
 
-import base64
 import html
-import io
 import json
 import logging
 import os
@@ -36,22 +34,15 @@ import chromadb
 
 from rag_common import VECTORDB_DIR, CHAT_MODEL, OpenRouterEmbeddingFunction
 from consultant import COLLECTIONS, SYSTEM_PROMPT, retrieve, build_context
+from vision import OLLAMA_URL, VISION_MODEL, describe_image, ollama_chat
 
 # --- Конфигурация ---
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 API = f"https://api.telegram.org/bot{TOKEN}"
 FILE_API = f"https://api.telegram.org/file/bot{TOKEN}"
 
-OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434").rstrip("/")
-VISION_MODEL = os.environ.get("VISION_MODEL", CHAT_MODEL)
-# Пустой NUM_CTX = не переопределять контекст (модель на GPU уже загружена с 256k,
-# переопределение вызвало бы перезагрузку модели и мешало бы другим сервисам GPU).
-NUM_CTX = os.environ.get("NUM_CTX", "").strip()
-NUM_PREDICT = int(os.environ.get("NUM_PREDICT", "1400"))
-TEMPERATURE = float(os.environ.get("TEMPERATURE", "0.2"))
 TOP_K = int(os.environ.get("RAG_TOP_K", "8"))
 MAX_SOURCES = int(os.environ.get("MAX_SOURCES", "3"))
-LLM_TIMEOUT = float(os.environ.get("LLM_TIMEOUT", "600"))
 HISTORY_TURNS = int(os.environ.get("HISTORY_TURNS", "6"))
 HISTORY_TTL = float(os.environ.get("HISTORY_TTL", "3600"))
 MAX_PDF_PAGES = int(os.environ.get("MAX_PDF_PAGES", "5"))
@@ -68,16 +59,6 @@ logging.basicConfig(
     stream=sys.stdout,
 )
 log = logging.getLogger("fb-bot")
-
-VISION_PROMPT = (
-    "Внимательно изучи изображение. Ответь на русском языке строго в таком формате:\n\n"
-    "ОПИСАНИЕ: что изображено (тип интерфейса, экран, график, таблица, схема, фото — что именно видно).\n"
-    "ТЕКСТ: полностью и дословно выпиши весь текст, который виден на изображении "
-    "(надписи, заголовки, подписи осей, значения, пункты меню, сообщения об ошибках, SQL-запросы, числа). "
-    "Сохраняй исходную формулировку и язык. Если текста нет — напиши «текста нет».\n"
-    "СУТЬ: главное, что нужно понять из изображения (например, какая ошибка возникла "
-    "или какие данные показаны)."
-)
 
 GREETING = (
     "Здравствуйте! Я AI-консультант по платформе Fastboard и базе данных ClickHouse.\n\n"
@@ -187,35 +168,6 @@ def download_file(file_id):
     r = requests.get(f"{FILE_API}/{path}", timeout=(10, 120))
     r.raise_for_status()
     return r.content, path
-
-
-# --- Модель ---
-def ollama_chat(messages, images=None, model=None):
-    """Запрос к Ollama /api/chat. think=False — модель рассуждающая, без этого ответ пуст."""
-    msgs = [dict(m) for m in messages]
-    if images:
-        msgs[-1]["images"] = images
-    options = {"temperature": TEMPERATURE, "num_predict": NUM_PREDICT}
-    if NUM_CTX:
-        options["num_ctx"] = int(NUM_CTX)
-    payload = {
-        "model": model or CHAT_MODEL,
-        "messages": msgs,
-        "stream": False,
-        "think": False,
-        "options": options,
-    }
-    r = requests.post(f"{OLLAMA_URL}/api/chat", json=payload, timeout=(15, LLM_TIMEOUT))
-    r.raise_for_status()
-    content = (r.json().get("message") or {}).get("content", "")
-    return re.sub(r"<think>.*?</think>", "", content, flags=re.S).strip()
-
-
-def describe_image(image_bytes, hint=""):
-    """Распознавание изображения: что на нём и какой текст на нём написан."""
-    b64 = base64.b64encode(image_bytes).decode()
-    prompt = VISION_PROMPT + (f"\n\nПользователь уточняет: {hint}" if hint else "")
-    return ollama_chat([{"role": "user", "content": prompt}], images=[b64], model=VISION_MODEL)
 
 
 def pdf_to_images(data):

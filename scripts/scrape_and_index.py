@@ -51,6 +51,14 @@ INLINE_PARENTS = {"p", "li", "h1", "h2", "h3", "h4", "a", "figcaption", "td", "t
 # Минимум слов на странице, чтобы её индексировать (отсекает заглушки и редиректы)
 MIN_WORDS = 40
 
+# Распознавание скриншотов документации. В справке Fastboard значительная часть
+# инструкций показана только на картинках, поэтому текст с них вытаскивается
+# vision-моделью и попадает в Markdown (и в поиск) рядом со ссылкой на скриншот.
+OCR_IMAGES = os.environ.get("OCR_IMAGES", "1") == "1"
+OCR_CACHE_PATH = os.path.join(BASE_DIR, "state", "image_ocr_cache.json")
+IMAGE_RE = re.compile(r"!\[[^\]]*\]\((https?://[^)\s]+)\)")
+OCR_SKIP_EXT = (".svg", ".gif")
+
 # Блочные теги: их рендерит основной цикл по descendants. render_inline НЕ должен
 # рекурсивно входить в них, иначе вложенные блоки (напр. <ul> внутри <li> или <p>)
 # попадут в вывод дважды.
@@ -209,7 +217,62 @@ def html_to_markdown(soup, base_url):
     return "\n".join(lines)
 
 
-def crawl(start_url, domain_filter, max_pages=200, delay=0.5):
+def load_ocr_cache():
+    """Кэш распознанных скриншотов: ссылка на картинку → текст с неё."""
+    try:
+        with open(OCR_CACHE_PATH, encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def save_ocr_cache(cache):
+    os.makedirs(os.path.dirname(OCR_CACHE_PATH), exist_ok=True)
+    tmp = OCR_CACHE_PATH + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(cache, f, ensure_ascii=False, indent=1)
+    os.replace(tmp, OCR_CACHE_PATH)
+
+
+def annotate_images(md, session, cache, stats):
+    """Дописывает под каждым скриншотом распознанный с него текст.
+
+    Ссылка на сам скриншот сохраняется, поэтому в ответе консультанта можно
+    сослаться на конкретную картинку из документации.
+    """
+    import vision
+
+    def replace(match):
+        src = match.group(1)
+        if src.lower().endswith(OCR_SKIP_EXT):
+            return match.group(0)
+
+        text = cache.get(src)
+        if text is None:
+            try:
+                resp = session.get(src, timeout=30)
+                resp.raise_for_status()
+                text = vision.ocr_image(resp.content).strip()
+                stats["ocr_new"] += 1
+                print(f"    👁 {src.rsplit('/', 1)[-1]}: {len(text)} симв.")
+            except Exception as e:
+                print(f"    ⚠️  не удалось распознать {src}: {e}")
+                text = ""
+            cache[src] = text
+            if stats["ocr_new"] % 5 == 0:
+                save_ocr_cache(cache)
+        else:
+            stats["ocr_cached"] += 1
+
+        if not text or text.lower().startswith("нет текста"):
+            return match.group(0)
+        body = "\n".join("> " + line for line in text.splitlines() if line.strip())
+        return f"{match.group(0)}\n\n> **Со скриншота** ([изображение]({src})):\n{body}\n"
+
+    return IMAGE_RE.sub(replace, md)
+
+
+def crawl(start_url, domain_filter, max_pages=200, delay=0.5, ocr=False, ocr_stats=None):
     """Обходит сайт рекурсивно. Возвращает список (url, markdown) без записи на диск."""
     visited = set()
     queue = [start_url]
@@ -217,6 +280,10 @@ def crawl(start_url, domain_filter, max_pages=200, delay=0.5):
 
     session = requests.Session()
     session.headers.update(HEADERS)
+
+    ocr_cache = load_ocr_cache() if ocr else {}
+    if ocr_stats is None:
+        ocr_stats = {"ocr_new": 0, "ocr_cached": 0}
 
     while queue and len(visited) < max_pages:
         url = queue.pop(0)
@@ -248,6 +315,8 @@ def crawl(start_url, domain_filter, max_pages=200, delay=0.5):
         if len(body.split()) < MIN_WORDS:
             print(f"  SKIP {url} (пустая страница)")
         else:
+            if ocr:
+                body = annotate_images(body, session, ocr_cache, ocr_stats)
             results.append((url, f"# {title}\n\nSource: {url}\n\n{body}"))
 
         # Сбор ссылок для дальнейшего обхода
@@ -258,6 +327,8 @@ def crawl(start_url, domain_filter, max_pages=200, delay=0.5):
 
         time.sleep(delay)
 
+    if ocr:
+        save_ocr_cache(ocr_cache)
     return results
 
 
@@ -361,11 +432,16 @@ def main():
     parser = argparse.ArgumentParser(description="Скрапер и индексатор документации (инкрементальный).")
     parser.add_argument("--full", action="store_true", help="Полная пересборка: очистить коллекции и переиндексировать всё.")
     parser.add_argument("--prune", action="store_true", help="Удалять страницы, исчезнувшие с источника.")
+    parser.add_argument("--no-ocr", action="store_true",
+                        help="Не распознавать текст на скриншотах документации.")
     args = parser.parse_args()
+    ocr = OCR_IMAGES and not args.no_ocr
+    ocr_stats = {"ocr_new": 0, "ocr_cached": 0}
 
     print("=== Fastboard & ClickHouse Docs Indexer ===")
     print(f"🔌 Эмбеддинги через OpenRouter: {EMBEDDING_MODEL}")
-    print(f"⚙️  Режим: {'ПОЛНАЯ ПЕРЕСБОРКА' if args.full else 'инкрементальный'}\n")
+    print(f"⚙️  Режим: {'ПОЛНАЯ ПЕРЕСБОРКА' if args.full else 'инкрементальный'}")
+    print(f"👁  Распознавание скриншотов: {'включено' if ocr else 'выключено'}\n")
 
     manifest = {"version": 1, "updated": None, "pages": {}} if args.full else load_manifest()
 
@@ -408,6 +484,8 @@ def main():
         domain_filter="help.fastboard.online",
         max_pages=150,
         delay=0.3,
+        ocr=ocr,
+        ocr_stats=ocr_stats,
     )
     fb_stats = sync_collection(
         fb_crawled, os.path.join(DOCS_DIR, "fastboard"), fb_col, manifest,
@@ -450,6 +528,7 @@ def main():
     print(f"  Без изменений:     {fb_stats['skipped'] + ch_stats['skipped']}")
     print(f"  Удалено:           {fb_stats['removed'] + ch_stats['removed']}")
     print(f"  Переиндексировано чанков: {fb_stats['chunks'] + ch_stats['chunks']}")
+    print(f"  Распознано скриншотов: {ocr_stats['ocr_new']} новых, {ocr_stats['ocr_cached']} из кэша")
     print(f"  Манифест: {MANIFEST_PATH}")
     print(f"  База данных: {VECTORDB_DIR}")
     print("=" * 44)
