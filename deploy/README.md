@@ -124,3 +124,23 @@ bash deploy/remote_deploy.sh          # на сервере
 ```bash
 ./.venv/bin/python scripts/scrape_and_index.py --full
 ```
+
+## Долгие операции на сервере
+
+Полная переиндексация идёт десятки минут (обход сайтов + распознавание
+скриншотов). Запускать её через `nohup` из ssh-сессии нельзя: при закрытии
+сессии systemd убивает процессы пользователя, и переиндексация обрывается
+на середине. Запускайте отдельным юнитом — он переживёт разрыв связи:
+
+```bash
+systemd-run --user --unit=fb-reindex \
+    --working-directory=/home/racho/fastboard-docs \
+    --setenv=PYTHONUNBUFFERED=1 \
+    /home/racho/fastboard-docs/.venv/bin/python scripts/scrape_and_index.py --prune
+
+systemctl --user status fb-reindex          # состояние
+journalctl --user -u fb-reindex -f          # ход работы
+```
+
+Распознанные скриншоты кэшируются в `state/image_ocr_cache.json` по адресу
+картинки, поэтому повторные запуски не тратят GPU на уже разобранные картинки.

@@ -459,7 +459,11 @@ def main():
     client = chromadb.PersistentClient(path=VECTORDB_DIR)
     ef = OpenRouterEmbeddingFunction()
 
-    if full:
+    # Коллекции чистятся не здесь, а после обхода: обход — самая долгая часть,
+    # и если процесс прервётся, база знаний не должна остаться пустой.
+    def reset_collections():
+        if not full:
+            return
         for name in ["fastboard_docs", "clickhouse_docs"]:
             try:
                 client.delete_collection(name)
@@ -487,6 +491,9 @@ def main():
         ocr=ocr,
         ocr_stats=ocr_stats,
     )
+    reset_collections()
+    fb_col = client.get_or_create_collection("fastboard_docs", embedding_function=ef)
+    ch_col = client.get_or_create_collection("clickhouse_docs", embedding_function=ef)
     fb_stats = sync_collection(
         fb_crawled, os.path.join(DOCS_DIR, "fastboard"), fb_col, manifest,
         force=fb_force, prune=args.prune,
