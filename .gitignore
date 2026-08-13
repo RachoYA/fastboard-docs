@@ -8,3 +8,4 @@ venv/
 logs/
 .daily_update.lock
 state/
+scrape_manifest.json

@@ -1,0 +1,57 @@
+# Переиспользование переменных в виджетах | Документация Fastboard
+
+Source: https://help.fastboard.online/gostech/primery-i-gaidy/pereispolzovanie-peremennyx-v-vidzetax/
+
+
+## **Задача**[​](#задача)
+
+Рассчитать показатели опираясь на предыдущие расчеты.
+
+
+## **Проблема**[​](#проблема)
+
+При расчетах, например, изменения выручки, нужно учитывать как текущую выручку, так и за предыдущий период. Но если понадобится еще и вывести значения, то нужно **несколько раз писать одну и туже формулу.** А при изменении расчетов нужно **держать в голове все места**, где была использована прежняя формула.
+
+
+## **Решение**[​](#решение)
+
+Писать формулу **один раз** в пределах виджета и переиспользовать переменную.
+
+- Добавим **несколько переменны**х в KPI карточке.
+Важно: переиспользовать можно только переменные на латинице, при другом наименовании не будет работать.
+
+![](https://book.winsolutions.ru/uploads/images/gallery/2026-04/embedded-image-hrsnpmga.png)
+
+> **Со скриншота** ([изображение](https://book.winsolutions.ru/uploads/images/gallery/2026-04/embedded-image-hrsnpmga.png)):
+> Переменные  
+> val  
+> prev_val  
+> dev  
+> sign  
+> st  
+> + Добавить переменную  
+> Скриншот показывает панель управления переменными в BI-платформе Fastboard с возможностью добавления новых переменных.
+
+
+- Для переменных **val** и **prev_val** укажем формулы расчета
+![](https://book.winsolutions.ru/uploads/images/gallery/2026-04/embedded-image-rptrqked.png)
+
+> **Со скриншота** ([изображение](https://book.winsolutions.ru/uploads/images/gallery/2026-04/embedded-image-rptrqked.png)):
+> 1)  
+> sumIf (Sample_Superstore.Sales, calendar.offset = '0') / 1e3 AS val,  
+> sumIf (Sample_Superstore.Sales, calendar.offset = '-1M') / 1e3 AS prev_val  
+> 2) Скриншот показывает два выражения на языке запросов Fastboard для вычисления текущих и предыдущих месячных продаж с нормализацией.
+
+
+- Для переменной **dev** рассчитаем отклонение используя ранее объявленные переменные
+![](https://book.winsolutions.ru/uploads/images/gallery/2026-04/embedded-image-emtggonk.png)
+
+> **Со скриншота** ([изображение](https://book.winsolutions.ru/uploads/images/gallery/2026-04/embedded-image-emtggonk.png)):
+> 1) (val - prev_val) / prev_val AS dev  
+> 2) Скриншот показывает SQL-выражение для вычисления относительного изменения значения по сравнению с предыдущим периодом, обозначенное как «dev».
+
+
+
+## **Итог**[​](#итог)
+
+Рассчитали показатель используя переменные и **не дублируя формулы расчета.**
