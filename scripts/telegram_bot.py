@@ -53,6 +53,10 @@ SETTINGS_MAX_DISTANCE = float(os.environ.get("SETTINGS_MAX_DISTANCE", "0.95"))
 # механизма, и один общий вектор находил только второй из них.
 QUERY_SPLIT = os.environ.get("QUERY_SPLIT", "1") == "1"
 MAX_QUERIES = int(os.environ.get("MAX_QUERIES", "3"))
+# Оглавление документации в контексте каждого ответа: 144 строки «название — ссылка».
+# Нужно, чтобы бот рекомендовал точную статью, даже если её фрагмент не попал в
+# выдачу поиска — иначе он давал ссылку на «похожую» статью.
+INDEX_IN_CONTEXT = os.environ.get("INDEX_IN_CONTEXT", "1") == "1"
 # Стриминг ответа черновиком Telegram: текст виден по мере генерации.
 DRAFT_STREAMING = os.environ.get("DRAFT_STREAMING", "1") == "1"
 DRAFT_INTERVAL = float(os.environ.get("DRAFT_INTERVAL", "0.4"))
@@ -252,6 +256,30 @@ QUERY_PROMPT = (
 )
 
 
+def build_article_index():
+    """Оглавление: «Название статьи — ссылка» по всем скачанным страницам."""
+    entries = []
+    for folder in ("fastboard", "clickhouse"):
+        path = os.path.join(os.path.dirname(VECTORDB_DIR), "docs", folder)
+        if not os.path.isdir(path):
+            continue
+        for name in sorted(os.listdir(path)):
+            if not name.endswith(".md"):
+                continue
+            try:
+                with open(os.path.join(path, name), encoding="utf-8") as f:
+                    head = [next(f, "") for _ in range(4)]
+            except OSError:
+                continue
+            title = head[0].lstrip("# ").split("|")[0].strip()
+            url = next((line.split("Source:", 1)[1].strip()
+                        for line in head if line.startswith("Source:")), "")
+            if title and url:
+                entries.append(f"{title} — {url}")
+    log.info("оглавление документации: %s статей", len(entries))
+    return "\n".join(entries)
+
+
 class Rag:
     """Поиск по документации. Клиенты создаются один раз и переиспользуются."""
 
@@ -259,6 +287,15 @@ class Rag:
         self.ef = OpenRouterEmbeddingFunction()
         self.chroma = chromadb.PersistentClient(path=VECTORDB_DIR)
         self._cols = {}
+        self._index = ""
+        self._index_ts = 0.0
+
+    def article_index(self):
+        """Оглавление с суточным обновлением — база пополняется по ночам."""
+        if INDEX_IN_CONTEXT and time.time() - self._index_ts > 3600:
+            self._index = build_article_index()
+            self._index_ts = time.time()
+        return self._index
 
     def collections(self):
         for key, name in COLLECTIONS.items():
@@ -326,7 +363,13 @@ class Rag:
         context, _sources = build_context(chunks) if chunks else ("", [])
         # Вопрос идёт последним: когда он был в начале, модель после длинного
         # контекста цеплялась за предыдущую тему диалога и отвечала на прошлый вопрос.
-        parts = ["Контекст из документации:\n\n" + (context or "(подходящих материалов не нашлось)")]
+        parts = []
+        index = self.article_index()
+        if index:
+            parts.append("Оглавление документации (названия статей и точные ссылки на них). "
+                         "Бери ссылку для рекомендации отсюда — но содержимое статьи, "
+                         "которой нет ниже в контексте, не пересказывай:\n" + index)
+        parts.append("Контекст из документации:\n\n" + (context or "(подходящих материалов не нашлось)"))
         if extra_context:
             parts.append(
                 "Пользователь прислал изображение или файл. Вот что на нём "
