@@ -271,14 +271,15 @@ class Rag:
     def answer(self, question, history=(), extra_context="", search_query=None, on_delta=None):
         chunks = self.search(search_query or question)
         context, _sources = build_context(chunks) if chunks else ("", [])
-        parts = []
+        # Вопрос идёт последним: когда он был в начале, модель после длинного
+        # контекста цеплялась за предыдущую тему диалога и отвечала на прошлый вопрос.
+        parts = ["Контекст из документации:\n\n" + (context or "(подходящих материалов не нашлось)")]
         if extra_context:
             parts.append(
                 "Пользователь прислал изображение или файл. Вот что на нём "
                 "(пользователь это уже видел — пересказывать содержимое не нужно, "
                 "используй как условие задачи):\n" + extra_context)
-        parts.append(f"Вопрос: {question}")
-        parts.append("Контекст из документации:\n\n" + (context or "(релевантных фрагментов не найдено)"))
+        parts.append(f"---\nВопрос пользователя (отвечай именно на него): {question}")
         messages = [{"role": "system", "content": SYSTEM_PROMPT}]
         messages += list(history)
         messages.append({"role": "user", "content": "\n\n".join(parts)})
