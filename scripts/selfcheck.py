@@ -107,7 +107,7 @@ def main():
 
     step("3. База знаний")
     total = 0
-    for col in bot.rag.collections():
+    for _key, col in bot.rag.collections():
         n = col.count()
         total += n
         print(f"  {col.name}: {n} фрагментов")

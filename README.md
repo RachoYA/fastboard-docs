@@ -132,6 +132,21 @@ python scripts/consultant.py --source clickhouse "Что такое движок
 python scripts/consultant.py
 ```
 
+## Справочник настроек виджетов
+
+Помимо публичной справки в базу знаний входит `docs/reference/` — выгрузка
+свойств виджетов из реальных проектов: раздел настроек, название свойства, тип,
+допустимые значения и путь в JSON. Того, что там есть, в справке нет.
+
+```bash
+python scripts/import_widget_settings.py путь/к/WIDGET-SETTINGS-TABLE.md
+python scripts/scrape_and_index.py     # проиндексировать
+```
+
+Справочник живёт в отдельной коллекции `widget_settings` и подмешивается к
+ответу ограниченным числом фрагментов (`SETTINGS_TOP_K`), чтобы плотная таблица
+на 19 тысяч строк не вытесняла из выдачи обычные статьи.
+
 ## Телеграм-бот
 
 `scripts/telegram_bot.py` — бот-консультант ([@FB_supt_bot](https://t.me/FB_supt_bot)).

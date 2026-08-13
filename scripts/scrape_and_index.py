@@ -59,6 +59,12 @@ OCR_CACHE_PATH = os.path.join(BASE_DIR, "state", "image_ocr_cache.json")
 IMAGE_RE = re.compile(r"!\[[^\]]*\]\((https?://[^)\s]+)\)")
 OCR_SKIP_EXT = (".svg", ".gif")
 
+# Справочник настроек виджетов (docs/reference) — своя коллекция: это плотная
+# таблица свойств, и в общей выдаче она забивала бы обычные статьи справки.
+REFERENCE_DIR = os.path.join(DOCS_DIR, "reference")
+REFERENCE_COLLECTION = "widget_settings"
+REFERENCE_CHUNK_ROWS = 12
+
 # Блочные теги: их рендерит основной цикл по descendants. render_inline НЕ должен
 # рекурсивно входить в них, иначе вложенные блоки (напр. <ul> внутри <li> или <p>)
 # попадут в вывод дважды.
@@ -419,6 +425,59 @@ def sync_collection(crawled, save_dir, collection, manifest, force=False, prune=
     return stats
 
 
+def chunk_reference(md, title):
+    """Режет справочник по строкам таблицы, повторяя заголовок в каждом куске.
+
+    Обычная нарезка по словам рвёт таблицу так, что кусок теряет и виджет,
+    и раздел настроек — и найти по нему потом ничего нельзя.
+    """
+    rows = [line for line in md.splitlines() if line.startswith("| ") and not set(line) <= set("|- ")]
+    chunks = []
+    for i in range(0, len(rows), REFERENCE_CHUNK_ROWS):
+        chunks.append(f"{title}\n" + "\n".join(rows[i:i + REFERENCE_CHUNK_ROWS]))
+    return chunks or [md]
+
+
+def sync_reference(collection, manifest, force=False):
+    """Индексирует docs/reference/*.md — справочник свойств виджетов."""
+    stats = {"changed": 0, "skipped": 0, "chunks": 0}
+    if not os.path.isdir(REFERENCE_DIR):
+        return stats
+
+    pages = manifest.setdefault("pages", {})
+    for name in sorted(os.listdir(REFERENCE_DIR)):
+        if not name.endswith(".md") or name == "README.md":
+            continue
+        filepath = os.path.join(REFERENCE_DIR, name)
+        with open(filepath, encoding="utf-8") as f:
+            md = f.read()
+        key = f"reference://{name}"
+        h = hashlib.sha256(md.encode("utf-8")).hexdigest()
+        if (not force) and pages.get(key, {}).get("hash") == h:
+            stats["skipped"] += 1
+            continue
+
+        title = md.splitlines()[0].lstrip("# ").strip()
+        chunks = chunk_reference(md, title)
+        ids = [hashlib.md5(f"{key}#{j}".encode()).hexdigest() for j in range(len(chunks))]
+        metas = [{"url": title, "chunk": j, "source": os.path.relpath(filepath, BASE_DIR)}
+                 for j in range(len(chunks))]
+        for i in range(0, len(chunks), 256):
+            collection.upsert(documents=chunks[i:i + 256], metadatas=metas[i:i + 256],
+                              ids=ids[i:i + 256])
+        try:
+            collection.delete(where={"$and": [{"url": title}, {"chunk": {"$gte": len(chunks)}}]})
+        except Exception:
+            pass
+
+        pages[key] = {"hash": h, "file": os.path.relpath(filepath, BASE_DIR),
+                      "collection": collection.name}
+        stats["changed"] += 1
+        stats["chunks"] += len(chunks)
+        print(f"  ~ {name} → {len(chunks)} фрагментов")
+    return stats
+
+
 def load_manifest():
     if os.path.exists(MANIFEST_PATH):
         try:
@@ -471,7 +530,7 @@ def main():
     def reset_collections():
         if not full:
             return
-        for name in ["fastboard_docs", "clickhouse_docs"]:
+        for name in ["fastboard_docs", "clickhouse_docs", REFERENCE_COLLECTION]:
             try:
                 client.delete_collection(name)
             except Exception:
@@ -479,6 +538,7 @@ def main():
 
     fb_col = client.get_or_create_collection("fastboard_docs", embedding_function=ef)
     ch_col = client.get_or_create_collection("clickhouse_docs", embedding_function=ef)
+    ref_col = client.get_or_create_collection(REFERENCE_COLLECTION, embedding_function=ef)
 
     # Если база пуста (например, потерян том vectordb) — форсируем полную
     # индексацию, даже в инкрементальном режиме, чтобы не остаться с пустым индексом.
@@ -503,6 +563,7 @@ def main():
     reset_collections()
     fb_col = client.get_or_create_collection("fastboard_docs", embedding_function=ef)
     ch_col = client.get_or_create_collection("clickhouse_docs", embedding_function=ef)
+    ref_col = client.get_or_create_collection(REFERENCE_COLLECTION, embedding_function=ef)
     fb_stats = sync_collection(
         fb_crawled, os.path.join(DOCS_DIR, "fastboard"), fb_col, manifest,
         force=fb_force, prune=args.prune,
@@ -535,6 +596,12 @@ def main():
     print(f"✅ ClickHouse: обход {len(ch_crawled)}, обновлено {ch_stats['changed']}, "
           f"без изменений {ch_stats['skipped']}, удалено {ch_stats['removed']}")
 
+    # --- Справочник настроек виджетов ---
+    print("\n📐 Справочник настроек виджетов (docs/reference)...")
+    ref_stats = sync_reference(ref_col, manifest, force=full or ref_col.count() == 0)
+    print(f"✅ Справочник: обновлено файлов {ref_stats['changed']}, "
+          f"без изменений {ref_stats['skipped']}")
+
     save_manifest(manifest)
 
     # Итог
@@ -543,7 +610,7 @@ def main():
     print(f"  Обновлено страниц: {fb_stats['changed'] + ch_stats['changed']}")
     print(f"  Без изменений:     {fb_stats['skipped'] + ch_stats['skipped']}")
     print(f"  Удалено:           {fb_stats['removed'] + ch_stats['removed']}")
-    print(f"  Переиндексировано чанков: {fb_stats['chunks'] + ch_stats['chunks']}")
+    print(f"  Переиндексировано чанков: {fb_stats['chunks'] + ch_stats['chunks'] + ref_stats['chunks']}")
     print(f"  Распознано скриншотов: {ocr_stats['ocr_new']} новых, {ocr_stats['ocr_cached']} из кэша")
     print(f"  Манифест: {MANIFEST_PATH}")
     print(f"  База данных: {VECTORDB_DIR}")

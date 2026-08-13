@@ -42,6 +42,9 @@ API = f"https://api.telegram.org/bot{TOKEN}"
 FILE_API = f"https://api.telegram.org/file/bot{TOKEN}"
 
 TOP_K = int(os.environ.get("RAG_TOP_K", "8"))
+# Справочник настроек — плотная таблица на тысячи строк: без отдельного лимита
+# он вытеснил бы из выдачи обычные статьи справки.
+SETTINGS_TOP_K = int(os.environ.get("SETTINGS_TOP_K", "4"))
 # Стриминг ответа черновиком Telegram: текст виден по мере генерации.
 DRAFT_STREAMING = os.environ.get("DRAFT_STREAMING", "1") == "1"
 DRAFT_INTERVAL = float(os.environ.get("DRAFT_INTERVAL", "0.4"))
@@ -246,17 +249,24 @@ class Rag:
                     self._cols[key] = self.chroma.get_collection(name, embedding_function=self.ef)
                 except Exception as e:
                     log.warning("Коллекция %s недоступна: %s", name, e)
-        return list(self._cols.values())
+        return list(self._cols.items())
 
     def search(self, query, top_k=TOP_K):
-        chunks = []
-        for col in self.collections():
+        chunks, reference = [], []
+        for key, col in self.collections():
+            limit = SETTINGS_TOP_K if key == "settings" else top_k
             try:
-                chunks.extend(retrieve(col, query, top_k))
+                found = retrieve(col, query, limit)
             except Exception as e:
                 log.warning("Ошибка поиска в %s: %s", col.name, e)
-        chunks.sort(key=lambda c: (c[2] is None, c[2] if c[2] is not None else 0))
-        return chunks[:top_k]
+                continue
+            (reference if key == "settings" else chunks).extend(found)
+
+        by_distance = lambda c: (c[2] is None, c[2] if c[2] is not None else 0)
+        chunks.sort(key=by_distance)
+        reference.sort(key=by_distance)
+        # Справочник добавляется к статьям, а не конкурирует с ними за места
+        return chunks[:top_k] + reference[:SETTINGS_TOP_K]
 
     def answer(self, question, history=(), extra_context="", search_query=None, on_delta=None):
         chunks = self.search(search_query or question)
@@ -327,7 +337,7 @@ def handle_commands(chat_id, text):
             models, gpu_ok = [], False
             log.warning("status: %s", e)
         counts = []
-        for col in rag.collections():
+        for _key, col in rag.collections():
             try:
                 counts.append(f"{col.name}: {col.count()}")
             except Exception:
