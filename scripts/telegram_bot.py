@@ -44,7 +44,7 @@ FILE_API = f"https://api.telegram.org/file/bot{TOKEN}"
 TOP_K = int(os.environ.get("RAG_TOP_K", "8"))
 # Стриминг ответа черновиком Telegram: текст виден по мере генерации.
 DRAFT_STREAMING = os.environ.get("DRAFT_STREAMING", "1") == "1"
-DRAFT_INTERVAL = float(os.environ.get("DRAFT_INTERVAL", "0.7"))
+DRAFT_INTERVAL = float(os.environ.get("DRAFT_INTERVAL", "0.4"))
 DRAFT_MAX_CHARS = int(os.environ.get("DRAFT_MAX_CHARS", "3900"))
 HISTORY_TURNS = int(os.environ.get("HISTORY_TURNS", "6"))
 HISTORY_TTL = float(os.environ.get("HISTORY_TTL", "3600"))
@@ -165,15 +165,17 @@ class Typing:
 class Draft:
     """Черновик Telegram (sendMessageDraft, Bot API 10.0) — стриминг ответа.
 
-    Пока модель пишет, текст проявляется в чате, а не ждёт полной готовности.
-    Черновик в истории не сохраняется: итог всё равно уходит обычным сообщением.
+    Пока модель пишет, текст проявляется в чате. Отправка идёт отдельным
+    потоком: сеть до Telegram не должна тормозить чтение потока от модели.
+    Черновик в истории не сохраняется — итог уходит обычным сообщением.
     """
 
     def __init__(self, chat_id):
         self.chat_id = chat_id
         self.draft_id = int(time.time() * 1000) % 2147483647
-        self._last_sent = 0.0
+        self._text = ""
         self._shown = ""
+        self._stop = threading.Event()
 
     def _push(self, text):
         try:
@@ -184,19 +186,27 @@ class Draft:
             pass  # стриминг — украшение: сбой показа не должен ломать ответ
 
     def update(self, text):
-        """Показывает накопленный текст, не чаще чем раз в DRAFT_INTERVAL."""
-        now = time.time()
-        if (not DRAFT_STREAMING or text == self._shown
-                or now - self._last_sent < DRAFT_INTERVAL
-                or len(text) > DRAFT_MAX_CHARS):
-            return
-        self._last_sent, self._shown = now, text
-        self._push(text)
+        """Вызывается на каждом кусочке ответа: только запоминает, без сети."""
+        self._text = text
 
-    def clear(self):
-        """Убирает черновик перед отправкой итогового сообщения."""
+    def __enter__(self):
+        if not DRAFT_STREAMING:
+            return self
+
+        def loop():
+            while not self._stop.is_set():
+                text = self._text
+                if text != self._shown and 0 < len(text) <= DRAFT_MAX_CHARS:
+                    self._shown = text
+                    self._push(text)
+                self._stop.wait(DRAFT_INTERVAL)
+        threading.Thread(target=loop, daemon=True).start()
+        return self
+
+    def __exit__(self, *exc):
+        self._stop.set()
         if DRAFT_STREAMING and self._shown:
-            self._push("")
+            self._push("")   # убрать черновик перед итоговым сообщением
 
 
 def download_file(file_id):
@@ -430,11 +440,10 @@ def process(batch):
         log.info("chat=%s сообщений=%s вопрос=%r вложений=%s",
                  chat_id, len(batch), question[:120], len(recognized_parts))
 
-        draft = Draft(chat_id)
-        answer = rag.answer(question, history.get(chat_id), extra_context=recognized,
-                            search_query=f"{hint} {recognized[:1500]}".strip(),
-                            on_delta=draft.update)
-        draft.clear()
+        with Draft(chat_id) as draft:
+            answer = rag.answer(question, history.get(chat_id), extra_context=recognized,
+                                search_query=f"{hint} {recognized[:1500]}".strip(),
+                                on_delta=draft.update)
         send(chat_id, answer, reply_to=reply_to)
         history.add(chat_id, f"{question}\n{recognized[:2000]}".strip(), answer)
 
