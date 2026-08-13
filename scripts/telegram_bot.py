@@ -308,85 +308,137 @@ def extract_media(msg):
     return None, None, None
 
 
-def process(msg):
-    chat_id = msg["chat"]["id"]
-    mid = msg.get("message_id")
-    text = (msg.get("text") or "").strip()
-    caption = (msg.get("caption") or "").strip()
-
-    if text.startswith("/") and handle_commands(chat_id, text):
-        return
-
+def read_media(msg, hint):
+    """Скачивает вложение и возвращает распознанный текст (или None, если нечего)."""
     file_id, name, kind = extract_media(msg)
+    if not file_id:
+        return None, name, kind
 
-    if kind == "unsupported":
-        send(chat_id, "Пока я работаю с текстом, изображениями (скриншоты, фото), PDF "
-                      "и текстовыми файлами. Пришлите, пожалуйста, в одном из этих форматов.")
-        return
+    data, _path = download_file(file_id)
+    if not data:
+        return None, name, "error"
+    log.info("файл=%s тип=%s размер=%sБ", name, kind, len(data))
 
-    if file_id:
-        with Typing(chat_id):
-            data, path = download_file(file_id)
-            if not data:
+    if kind == "image":
+        return describe_image(data, hint), name, kind
+    if kind == "pdf":
+        pages, total = pdf_to_images(data)
+        parts = [f"[Страница {i}]\n" + describe_image(png, hint) for i, png in enumerate(pages, 1)]
+        if total > len(pages):
+            log.info("PDF: обработаны первые %s из %s страниц", len(pages), total)
+        return "\n\n".join(parts), name, kind
+    return data.decode("utf-8", errors="replace")[:MAX_TEXT_CHARS], name, kind
+
+
+def process(batch):
+    """Обрабатывает пачку сообщений как один вопрос и отвечает один раз.
+
+    Сообщения, отправленные подряд (текст + скриншот, несколько картинок,
+    мысль в двух сообщениях), — это один контекст, а не несколько вопросов.
+    """
+    chat_id = batch[0]["chat"]["id"]
+    reply_to = batch[-1].get("message_id")
+
+    # Команда в пачке выполняется сразу и отдельно от остального
+    for msg in batch:
+        text = (msg.get("text") or "").strip()
+        if text.startswith("/") and handle_commands(chat_id, text):
+            return
+
+    texts = []
+    for msg in batch:
+        for field in ("text", "caption"):
+            value = (msg.get(field) or "").strip()
+            if value and not value.startswith("/"):
+                texts.append(value)
+    hint = "\n".join(texts)
+
+    with Typing(chat_id):
+        recognized_parts = []
+        unsupported = False
+        for msg in batch:
+            try:
+                recognized, name, kind = read_media(msg, hint)
+            except Exception:
+                log.exception("Не удалось разобрать вложение")
+                send(chat_id, "Не смог прочитать вложение. Попробуйте прислать его ещё раз "
+                              "или другим форматом.")
+                return
+            if kind == "unsupported":
+                unsupported = True
+            elif kind == "error":
                 send(chat_id, "Не удалось скачать файл. Попробуйте отправить его ещё раз.")
                 return
-            log.info("chat=%s файл=%s тип=%s размер=%sБ", chat_id, name, kind, len(data))
+            elif recognized:
+                label = f"[{name}]" if len(batch) > 1 else ""
+                recognized_parts.append(f"{label}\n{recognized}".strip())
 
-            # Распознанное не показываем пользователю — он видел, что прислал.
-            # Оно идёт только в контекст ответа и в поисковый запрос по базе знаний.
-            if kind == "image":
-                recognized = describe_image(data, caption)
-            elif kind == "pdf":
-                try:
-                    pages, total = pdf_to_images(data)
-                except Exception as e:
-                    log.exception("PDF")
-                    send(chat_id, f"Не смог прочитать PDF: {e}")
-                    return
-                parts = []
-                for i, png in enumerate(pages, 1):
-                    parts.append(f"[Страница {i}]\n" + describe_image(png, caption))
-                recognized = "\n\n".join(parts)
-                if total > len(pages):
-                    log.info("PDF: обработаны первые %s из %s страниц", len(pages), total)
-            else:
-                recognized = data.decode("utf-8", errors="replace")[:MAX_TEXT_CHARS]
+        if not recognized_parts and not texts:
+            send(chat_id, "Пока я работаю с текстом, изображениями (скриншоты, фото), PDF "
+                          "и текстовыми файлами."
+                 if unsupported else "Напишите вопрос текстом или пришлите скриншот.")
+            return
 
-            question = caption or (
-                "Что делать в ситуации на изображении? Если видна ошибка — объясни "
-                "причину и как её исправить средствами Fastboard/ClickHouse."
-            )
-            answer = rag.answer(question, history.get(chat_id), extra_context=recognized,
-                                search_query=f"{caption} {recognized[:1500]}".strip())
-            send(chat_id, answer, reply_to=mid)
-            history.add(chat_id, f"[файл {name}] {question}\n{recognized[:2000]}", answer)
-        return
+        recognized = "\n\n".join(recognized_parts)
+        question = hint or (
+            "Что делать в ситуации на изображении? Если видна ошибка — объясни "
+            "причину и как её исправить средствами Fastboard/ClickHouse."
+        )
+        log.info("chat=%s сообщений=%s вопрос=%r вложений=%s",
+                 chat_id, len(batch), question[:120], len(recognized_parts))
 
-    if not text:
-        send(chat_id, "Напишите вопрос текстом или пришлите скриншот.")
-        return
-
-    log.info("chat=%s вопрос=%r", chat_id, text[:120])
-    with Typing(chat_id):
-        answer = rag.answer(text, history.get(chat_id))
-        send(chat_id, answer, reply_to=mid)
-        history.add(chat_id, text, answer)
+        answer = rag.answer(question, history.get(chat_id), extra_context=recognized,
+                            search_query=f"{hint} {recognized[:1500]}".strip())
+        send(chat_id, answer, reply_to=reply_to)
+        history.add(chat_id, f"{question}\n{recognized[:2000]}".strip(), answer)
 
 
-# --- Очередь и цикл опроса ---
+# --- Склейка сообщений, очередь и цикл опроса ---
 jobs = queue.Queue(maxsize=200)
+
+# Сообщения, пришедшие подряд, — один вопрос. Ждём паузу в разговоре и только
+# потом отвечаем, одним ответом на всю пачку.
+AGGREGATE_WINDOW = float(os.environ.get("AGGREGATE_WINDOW", "2.5"))
+_pending = {}
+_pending_lock = threading.Lock()
+
+
+def enqueue(msg):
+    """Кладёт сообщение в буфер чата; в работу пачка уйдёт после паузы."""
+    with _pending_lock:
+        item = _pending.setdefault(msg["chat"]["id"], {"msgs": [], "last": 0.0})
+        item["msgs"].append(msg)
+        item["last"] = time.time()
+
+
+def collector():
+    """Отдаёт в работу те чаты, где пользователь замолчал дольше паузы."""
+    while True:
+        ready = []
+        now = time.time()
+        with _pending_lock:
+            for chat_id, item in list(_pending.items()):
+                if now - item["last"] >= AGGREGATE_WINDOW:
+                    ready.append(item["msgs"])
+                    del _pending[chat_id]
+        for batch in ready:
+            try:
+                jobs.put_nowait(batch)
+            except queue.Full:
+                send(batch[0]["chat"]["id"], "Сейчас много запросов, попробуйте через минуту.")
+        time.sleep(0.3)
 
 
 def worker():
-    """GPU обслуживает один запрос за раз — обрабатываем сообщения последовательно."""
+    """GPU обслуживает один запрос за раз — обрабатываем пачки последовательно."""
     while True:
-        msg = jobs.get()
+        batch = jobs.get()
         try:
-            process(msg)
+            process(batch)
         except Exception as e:
             log.exception("Ошибка обработки")
             try:
-                send(msg["chat"]["id"],
+                send(batch[0]["chat"]["id"],
                      "Извините, при обработке запроса произошла ошибка. "
                      f"Попробуйте ещё раз.\n\nДетали: {type(e).__name__}: {str(e)[:200]}")
             except Exception:
@@ -429,6 +481,7 @@ def main():
     ])
 
     threading.Thread(target=worker, daemon=True).start()
+    threading.Thread(target=collector, daemon=True).start()
 
     offset = load_offset()
     while True:
@@ -447,10 +500,7 @@ def main():
                 save_offset(offset)
                 msg = upd.get("message")
                 if msg and not msg.get("from", {}).get("is_bot"):
-                    try:
-                        jobs.put_nowait(msg)
-                    except queue.Full:
-                        send(msg["chat"]["id"], "Сейчас много запросов, попробуйте через минуту.")
+                    enqueue(msg)
         except requests.RequestException as e:
             log.warning("Сеть: %s", e)
             time.sleep(5)
