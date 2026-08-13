@@ -48,6 +48,9 @@ HEADERS = {
 # Теги, внутри которых ссылки/картинки рендерятся как инлайн (не дублируются).
 INLINE_PARENTS = {"p", "li", "h1", "h2", "h3", "h4", "a", "figcaption", "td", "th"}
 
+# Минимум слов на странице, чтобы её индексировать (отсекает заглушки и редиректы)
+MIN_WORDS = 40
+
 # Блочные теги: их рендерит основной цикл по descendants. render_inline НЕ должен
 # рекурсивно входить в них, иначе вложенные блоки (напр. <ul> внутри <li> или <p>)
 # попадут в вывод дважды.
@@ -232,12 +235,20 @@ def crawl(start_url, domain_filter, max_pages=200, delay=0.5):
             print(f"  ERROR {url}: {e}")
             continue
 
-        soup = BeautifulSoup(resp.text, "html.parser")
+        # ВАЖНО: разбираем resp.content, а не resp.text. Если сервер не указал
+        # charset (так отдаёт help.fastboard.online), requests декодирует ответ
+        # как ISO-8859-1 и вся кириллица превращается в «Ð Ð°Ð±Ð¾ÑÐ°». BeautifulSoup
+        # же определяет кодировку по <meta charset> и разбирает страницу верно.
+        soup = BeautifulSoup(resp.content, "html.parser")
         title = soup.title.string.strip() if soup.title and soup.title.string else url
 
-        md = html_to_markdown(soup, url)
-        md = f"# {title}\n\nSource: {url}\n\n{md}"
-        results.append((url, md))
+        body = html_to_markdown(soup, url)
+        # Пустые страницы (редиректы, заглушки) только засоряют поиск: по ним
+        # находятся «источники» без единого факта.
+        if len(body.split()) < MIN_WORDS:
+            print(f"  SKIP {url} (пустая страница)")
+        else:
+            results.append((url, f"# {title}\n\nSource: {url}\n\n{body}"))
 
         # Сбор ссылок для дальнейшего обхода
         for a in soup.find_all("a", href=True):

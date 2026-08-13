@@ -48,8 +48,9 @@ VISION_MODEL = os.environ.get("VISION_MODEL", CHAT_MODEL)
 # переопределение вызвало бы перезагрузку модели и мешало бы другим сервисам GPU).
 NUM_CTX = os.environ.get("NUM_CTX", "").strip()
 NUM_PREDICT = int(os.environ.get("NUM_PREDICT", "1400"))
-TEMPERATURE = float(os.environ.get("TEMPERATURE", "0.3"))
-TOP_K = int(os.environ.get("RAG_TOP_K", "6"))
+TEMPERATURE = float(os.environ.get("TEMPERATURE", "0.2"))
+TOP_K = int(os.environ.get("RAG_TOP_K", "8"))
+MAX_SOURCES = int(os.environ.get("MAX_SOURCES", "3"))
 LLM_TIMEOUT = float(os.environ.get("LLM_TIMEOUT", "600"))
 HISTORY_TURNS = int(os.environ.get("HISTORY_TURNS", "6"))
 HISTORY_TTL = float(os.environ.get("HISTORY_TTL", "3600"))
@@ -255,12 +256,15 @@ class Rag:
         chunks.sort(key=lambda c: (c[2] is None, c[2] if c[2] is not None else 0))
         return chunks[:top_k]
 
-    def answer(self, question, history=(), extra_context=""):
-        chunks = self.search(question)
+    def answer(self, question, history=(), extra_context="", search_query=None):
+        chunks = self.search(search_query or question)
         context, sources = build_context(chunks) if chunks else ("", [])
         parts = []
         if extra_context:
-            parts.append(f"Данные, присланные пользователем (распознано с изображения/файла):\n{extra_context}")
+            parts.append(
+                "Пользователь прислал изображение или файл. Вот что на нём "
+                "(пользователь это уже видел — пересказывать содержимое не нужно, "
+                "используй как условие задачи):\n" + extra_context)
         parts.append(f"Вопрос: {question}")
         parts.append("Контекст из документации:\n\n" + (context or "(релевантных фрагментов не найдено)"))
         messages = [{"role": "system", "content": SYSTEM_PROMPT}]
@@ -268,7 +272,7 @@ class Rag:
         messages.append({"role": "user", "content": "\n\n".join(parts)})
         reply = ollama_chat(messages)
         if sources:
-            reply += "\n\n📚 Источники:\n" + "\n".join(f"  - {s}" for s in sources)
+            reply += "\n\n📚 Источники:\n" + "\n".join(f"  - {s}" for s in sources[:MAX_SOURCES])
         return reply
 
 
@@ -378,9 +382,10 @@ def process(msg):
                 return
             log.info("chat=%s файл=%s тип=%s размер=%sБ", chat_id, name, kind, len(data))
 
+            # Распознанное не показываем пользователю — он видел, что прислал.
+            # Оно идёт только в контекст ответа и в поисковый запрос по базе знаний.
             if kind == "image":
                 recognized = describe_image(data, caption)
-                header = "🖼 Распознано на изображении:\n\n" + recognized
             elif kind == "pdf":
                 try:
                     pages, total = pdf_to_images(data)
@@ -392,20 +397,18 @@ def process(msg):
                 for i, png in enumerate(pages, 1):
                     parts.append(f"[Страница {i}]\n" + describe_image(png, caption))
                 recognized = "\n\n".join(parts)
-                more = f" (обработаны первые {len(pages)} из {total})" if total > len(pages) else ""
-                header = f"📄 Распознано в PDF{more}:\n\n{recognized}"
+                if total > len(pages):
+                    log.info("PDF: обработаны первые %s из %s страниц", len(pages), total)
             else:
                 recognized = data.decode("utf-8", errors="replace")[:MAX_TEXT_CHARS]
-                header = f"📎 Файл {name} прочитан ({len(recognized)} символов)."
-
-            send(chat_id, header, reply_to=mid)
 
             question = caption or (
-                "Объясни, что показано, и подскажи, что с этим делать в Fastboard/ClickHouse. "
-                "Если видна ошибка — объясни причину и как её исправить."
+                "Что делать в ситуации на изображении? Если видна ошибка — объясни "
+                "причину и как её исправить средствами Fastboard/ClickHouse."
             )
-            answer = rag.answer(question, history.get(chat_id), extra_context=recognized)
-            send(chat_id, answer)
+            answer = rag.answer(question, history.get(chat_id), extra_context=recognized,
+                                search_query=f"{caption} {recognized[:1500]}".strip())
+            send(chat_id, answer, reply_to=mid)
             history.add(chat_id, f"[файл {name}] {question}\n{recognized[:2000]}", answer)
         return
 
