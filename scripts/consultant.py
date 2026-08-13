@@ -68,6 +68,15 @@ SYSTEM_PROMPT = (
 )
 
 
+def retrieve(collection, query: str, top_k: int):
+    """Возвращает список фрагментов: (документ, метаданные, расстояние)."""
+    res = collection.query(query_texts=[query], n_results=top_k)
+    docs = (res.get("documents") or [[]])[0]
+    metas = (res.get("metadatas") or [[]])[0]
+    dists = (res.get("distances") or [[]])[0] or [None] * len(docs)
+    return list(zip(docs, metas, dists))
+
+
 def build_context(chunks):
     """Формирует текст контекста и список источников.
 
