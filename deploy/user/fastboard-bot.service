@@ -1,0 +1,15 @@
+[Unit]
+Description=Telegram-бот AI-консультанта Fastboard/ClickHouse
+After=network-online.target gpu-ollama-tunnel.service
+Wants=gpu-ollama-tunnel.service
+
+[Service]
+Type=simple
+WorkingDirectory=%h/fastboard-docs
+Environment=PYTHONUNBUFFERED=1
+ExecStart=%h/fastboard-docs/.venv/bin/python %h/fastboard-docs/scripts/telegram_bot.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=default.target

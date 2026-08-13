@@ -1,0 +1,8 @@
+[Unit]
+Description=Инкрементальное обновление базы знаний Fastboard/ClickHouse
+Wants=gpu-ollama-tunnel.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/fastboard-docs
+ExecStart=%h/fastboard-docs/scripts/daily_update.sh

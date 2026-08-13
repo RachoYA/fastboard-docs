@@ -18,6 +18,7 @@ import chromadb
 from rag_common import (
     VECTORDB_DIR,
     CHAT_MODEL,
+    CHAT_EXTRA_BODY,
     EMBEDDING_MODEL,
     get_client,
     OpenRouterEmbeddingFunction,
@@ -106,6 +107,7 @@ class Consultant:
                 {"role": "user", "content": user_msg},
             ],
             temperature=0.2,
+            extra_body=CHAT_EXTRA_BODY or None,
         )
         reply = resp.choices[0].message.content or ""
 

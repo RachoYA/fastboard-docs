@@ -1,0 +1,19 @@
+[Unit]
+Description=SSH-туннель к Ollama на GPU-сервере (127.0.0.1:11434)
+After=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/ssh -NT \
+  -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
+  -o ExitOnForwardFailure=yes \
+  -o ServerAliveInterval=20 -o ServerAliveCountMax=3 \
+  -o TCPKeepAlive=yes -o ConnectTimeout=15 \
+  -i %h/.ssh/gpu_tunnel \
+  -L 127.0.0.1:11434:127.0.0.1:11434 \
+  user1@82.202.159.178
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

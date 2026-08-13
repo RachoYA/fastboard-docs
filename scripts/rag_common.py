@@ -6,6 +6,7 @@
 см. `.env.example`.
 """
 
+import json
 import os
 from typing import Any, Dict
 
@@ -28,6 +29,13 @@ OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
 OPENROUTER_BASE_URL = os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
 CHAT_MODEL = os.environ.get("OPENROUTER_CHAT_MODEL", "anthropic/claude-sonnet-4.5")
 EMBEDDING_MODEL = os.environ.get("OPENROUTER_EMBEDDING_MODEL", "openai/text-embedding-3-small")
+
+# Доп. поля тела запроса чата (JSON) — для рассуждающих локальных моделей, напр.:
+#   CHAT_EXTRA_BODY={"reasoning_effort": "none"}
+try:
+    CHAT_EXTRA_BODY: Dict[str, Any] = json.loads(os.environ.get("CHAT_EXTRA_BODY") or "{}")
+except json.JSONDecodeError:
+    CHAT_EXTRA_BODY = {}
 
 # Сетевые параметры (ретраи/таймаут для устойчивости к 429/5xx/сетевым сбоям)
 OPENROUTER_MAX_RETRIES = int(os.environ.get("OPENROUTER_MAX_RETRIES", "5"))

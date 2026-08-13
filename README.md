@@ -45,10 +45,23 @@ docs/
 - Обучения моделей
 - Справочника по API
 
-## AI-консультант (OpenRouter)
+## AI-консультант
 
-Эмбеддинги для RAG и ответы консультанта работают через [OpenRouter](https://openrouter.ai)
-(единый OpenAI-совместимый API).
+Эмбеддинги для RAG и ответы консультанта работают через любой OpenAI-совместимый
+эндпоинт: локальную модель на своём GPU-сервере (Ollama) либо облако
+[OpenRouter](https://openrouter.ai). Оба варианта настраиваются в `.env`,
+см. `.env.example`.
+
+### Боевая конфигурация
+
+| Что | Где | Значение |
+|---|---|---|
+| Сервер консультанта | `89.232.184.218` | бот, база знаний, векторная БД |
+| GPU-сервер | `82.202.159.178` | Ollama, NVIDIA A100 40 ГБ |
+| Модель ответов и зрения | Ollama | `qwen3.6:27b-256k` (vision + tools, контекст 256k) |
+| Модель эмбеддингов | Ollama | `bge-m3` (1024-мерные, многоязычные) |
+| Канал до GPU | SSH-туннель | `gpu-ollama-tunnel.service` → `127.0.0.1:11434` |
+| Телеграм-бот | systemd | `fastboard-bot.service` |
 
 ### Установка
 
@@ -59,11 +72,16 @@ cp .env.example .env   # впишите OPENROUTER_API_KEY
 
 Модели настраиваются в `.env`:
 
-| Переменная | Назначение | По умолчанию |
+| Переменная | Назначение | Пример (локальная модель) |
 |---|---|---|
-| `OPENROUTER_API_KEY` | Ключ API OpenRouter | — |
-| `OPENROUTER_CHAT_MODEL` | Модель ответов | `anthropic/claude-sonnet-4.5` |
-| `OPENROUTER_EMBEDDING_MODEL` | Модель эмбеддингов | `openai/text-embedding-3-small` |
+| `OPENROUTER_BASE_URL` | OpenAI-совместимый эндпоинт | `http://127.0.0.1:11434/v1` |
+| `OPENROUTER_API_KEY` | Ключ API (для Ollama — любой) | `ollama` |
+| `OPENROUTER_CHAT_MODEL` | Модель ответов | `qwen3.6:27b-256k` |
+| `OPENROUTER_EMBEDDING_MODEL` | Модель эмбеддингов | `bge-m3` |
+| `CHAT_EXTRA_BODY` | Доп. поля запроса чата | `{"reasoning_effort": "none"}` |
+
+> `qwen3.6` — рассуждающая модель. Без `CHAT_EXTRA_BODY={"reasoning_effort": "none"}`
+> весь ответ уходит в блок размышлений, а `content` приходит пустым.
 
 ### Индексация (инкрементальная)
 
@@ -113,3 +131,31 @@ python scripts/consultant.py --source clickhouse "Что такое движок
 # интерактивный режим
 python scripts/consultant.py
 ```
+
+## Телеграм-бот
+
+`scripts/telegram_bot.py` — бот-консультант ([@FB_supt_bot](https://t.me/FB_supt_bot)).
+
+- **Текст** — ответ по документации Fastboard/ClickHouse со ссылками на источники.
+- **Картинки и скриншоты** — vision-модель описывает изображение и дословно
+  считывает текст с него (сообщения об ошибках, SQL, подписи графиков, настройки),
+  после чего бот отвечает по документации с учётом распознанного.
+- **PDF** — первые страницы рендерятся в картинки и распознаются так же
+  (лимит страниц — `MAX_PDF_PAGES`).
+- **Текстовые файлы** (`.txt`, `.md`, `.sql`, `.csv`, `.log`) — читаются как контекст.
+- Помнит последние реплики диалога (`HISTORY_TURNS`), команды: `/help`, `/reset`, `/status`.
+
+Запросы к GPU обрабатываются по одному: у Ollama на сервере `OLLAMA_NUM_PARALLEL=1`.
+
+```bash
+./.venv/bin/python scripts/telegram_bot.py     # вручную
+systemctl --user status fastboard-bot          # как сервис
+journalctl --user -u fastboard-bot -f          # логи
+```
+
+## Деплой
+
+Код деплоится через GitHub Actions: пуш в `master` → `.github/workflows/deploy.yml`
+→ `deploy/remote_deploy.sh` на сервере (обновление кода, зависимостей,
+systemd-юнитов и перезапуск бота). Подробности и ручной запуск — в
+[`deploy/README.md`](deploy/README.md).
