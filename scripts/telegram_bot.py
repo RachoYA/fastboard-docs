@@ -42,7 +42,6 @@ API = f"https://api.telegram.org/bot{TOKEN}"
 FILE_API = f"https://api.telegram.org/file/bot{TOKEN}"
 
 TOP_K = int(os.environ.get("RAG_TOP_K", "8"))
-MAX_SOURCES = int(os.environ.get("MAX_SOURCES", "3"))
 HISTORY_TURNS = int(os.environ.get("HISTORY_TURNS", "6"))
 HISTORY_TTL = float(os.environ.get("HISTORY_TTL", "3600"))
 MAX_PDF_PAGES = int(os.environ.get("MAX_PDF_PAGES", "5"))
@@ -210,7 +209,7 @@ class Rag:
 
     def answer(self, question, history=(), extra_context="", search_query=None):
         chunks = self.search(search_query or question)
-        context, sources = build_context(chunks) if chunks else ("", [])
+        context, _sources = build_context(chunks) if chunks else ("", [])
         parts = []
         if extra_context:
             parts.append(
@@ -222,10 +221,9 @@ class Rag:
         messages = [{"role": "system", "content": SYSTEM_PROMPT}]
         messages += list(history)
         messages.append({"role": "user", "content": "\n\n".join(parts)})
-        reply = ollama_chat(messages)
-        if sources:
-            reply += "\n\n📚 Источники:\n" + "\n".join(f"  - {s}" for s in sources[:MAX_SOURCES])
-        return reply
+        # Ссылки не приклеиваем списком: нерелевантные фрагменты давали мусорные
+        # «источники». Нужную статью модель рекомендует сама — по системному промпту.
+        return ollama_chat(messages)
 
 
 # --- История диалога ---
