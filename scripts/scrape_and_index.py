@@ -332,7 +332,7 @@ def crawl(start_url, domain_filter, max_pages=200, delay=0.5, ocr=False, ocr_sta
     return results
 
 
-def chunk_text(text, chunk_size=800, overlap=100):
+def chunk_text(text, chunk_size=300, overlap=60):
     """Разбивает текст на перекрывающиеся чанки."""
     words = text.split()
     step = max(1, chunk_size - overlap)  # защита от бесконечного цикла при overlap >= chunk_size
@@ -345,11 +345,12 @@ def chunk_text(text, chunk_size=800, overlap=100):
 
 
 def index_one(url, filepath, text, collection):
-    """Индексирует один документ: удаляет старые чанки этого URL и заливает новые."""
-    try:
-        collection.delete(where={"url": url})
-    except Exception:
-        pass
+    """Переиндексирует один документ.
+
+    Сначала перезаписываются чанки, и только потом удаляются лишние: если
+    удалять сначала, страница на время индексации выпадает из поиска и бот
+    отвечает «этого нет в базе знаний» на вопрос, ответ на который есть.
+    """
     chunks = chunk_text(text)
     ids, docs, metas = [], [], []
     rel = os.path.relpath(filepath, BASE_DIR)
@@ -359,6 +360,12 @@ def index_one(url, filepath, text, collection):
         metas.append({"url": url, "chunk": j, "source": rel})
     if ids:
         collection.upsert(documents=docs, metadatas=metas, ids=ids)
+
+    # Хвост от прошлой версии страницы (если раньше чанков было больше)
+    try:
+        collection.delete(where={"$and": [{"url": url}, {"chunk": {"$gte": len(ids)}}]})
+    except Exception:
+        pass
     return len(ids)
 
 
@@ -485,8 +492,10 @@ def main():
     print("📄 Обход Fastboard...")
     fb_crawled = crawl(
         start_url="https://help.fastboard.online/user/",
-        domain_filter="help.fastboard.online",
-        max_pages=150,
+        # Только /user/: раздел /gostech/ — почти дословный дубликат для ГосТеха,
+        # он съедал лимит страниц и подмешивался в выдачу вместо основной справки.
+        domain_filter="help.fastboard.online/user/",
+        max_pages=400,
         delay=0.3,
         ocr=ocr,
         ocr_stats=ocr_stats,
