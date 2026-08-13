@@ -48,6 +48,11 @@ SETTINGS_TOP_K = int(os.environ.get("SETTINGS_TOP_K", "4"))
 # И только если он вообще близок к вопросу: иначе таблица свойств виджетов
 # подмешивалась к вопросам про доступ, роли и прочее, где она не при чём.
 SETTINGS_MAX_DISTANCE = float(os.environ.get("SETTINGS_MAX_DISTANCE", "0.95"))
+# Разбиение вопроса на отдельные поисковые запросы. В вопросе вида «директор
+# видит все отчёты, а менеджер только один и только по Сибири» два разных
+# механизма, и один общий вектор находил только второй из них.
+QUERY_SPLIT = os.environ.get("QUERY_SPLIT", "1") == "1"
+MAX_QUERIES = int(os.environ.get("MAX_QUERIES", "3"))
 # Стриминг ответа черновиком Telegram: текст виден по мере генерации.
 DRAFT_STREAMING = os.environ.get("DRAFT_STREAMING", "1") == "1"
 DRAFT_INTERVAL = float(os.environ.get("DRAFT_INTERVAL", "0.4"))
@@ -237,6 +242,16 @@ def pdf_to_images(data):
 
 
 # --- RAG ---
+QUERY_PROMPT = (
+    "Пользователь спрашивает службу заботы BI-платформы Fastboard (визуализации, "
+    "дашборды, доступы, SQL, ClickHouse). Составь от одного до {n} коротких поисковых "
+    "запросов к документации, которые нужны, чтобы полностью ответить на его вопрос. "
+    "Если в вопросе несколько задач — по запросу на каждую. Пиши терминами документации. "
+    "Каждый запрос с новой строки, без нумерации, пояснений и кавычек.\n\n"
+    "Вопрос: {question}"
+)
+
+
 class Rag:
     """Поиск по документации. Клиенты создаются один раз и переиспользуются."""
 
@@ -253,6 +268,23 @@ class Rag:
                 except Exception as e:
                     log.warning("Коллекция %s недоступна: %s", name, e)
         return list(self._cols.items())
+
+    def make_queries(self, question):
+        """Разбивает вопрос на поисковые запросы; при сбое ищет как есть."""
+        if not QUERY_SPLIT or len(question) < 25:
+            return [question]
+        try:
+            raw = ollama_chat(
+                [{"role": "user", "content": QUERY_PROMPT.format(n=MAX_QUERIES, question=question[:2000])}],
+                num_predict=160, temperature=0.1)
+        except Exception as e:
+            log.warning("Не удалось разбить вопрос на запросы: %s", e)
+            return [question]
+
+        queries = [line.strip(" -•*\t") for line in raw.splitlines() if line.strip()]
+        queries = [q for q in queries if 3 < len(q) < 200][:MAX_QUERIES]
+        log.info("поисковые запросы: %s", queries)
+        return queries or [question]
 
     def search(self, query, top_k=TOP_K):
         chunks, reference = [], []
@@ -273,8 +305,24 @@ class Rag:
                     if c[2] is None or c[2] <= SETTINGS_MAX_DISTANCE][:SETTINGS_TOP_K]
         return chunks[:top_k] + relevant
 
+    def search_all(self, question, top_k=TOP_K):
+        """Ищет по каждому подзапросу и объединяет результаты без повторов."""
+        queries = self.make_queries(question)
+        if len(queries) == 1:
+            return self.search(queries[0], top_k)
+
+        best = {}
+        for query in queries:
+            for chunk in self.search(query, top_k):
+                doc, meta, dist = chunk
+                key = ((meta or {}).get("url"), (meta or {}).get("chunk"))
+                if key not in best or (dist is not None and dist < best[key][2]):
+                    best[key] = chunk
+        found = sorted(best.values(), key=lambda c: (c[2] is None, c[2] if c[2] is not None else 0))
+        return found[:top_k + SETTINGS_TOP_K]
+
     def answer(self, question, history=(), extra_context="", search_query=None, on_delta=None):
-        chunks = self.search(search_query or question)
+        chunks = self.search_all(search_query or question)
         context, _sources = build_context(chunks) if chunks else ("", [])
         # Вопрос идёт последним: когда он был в начале, модель после длинного
         # контекста цеплялась за предыдущую тему диалога и отвечала на прошлый вопрос.
