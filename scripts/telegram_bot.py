@@ -41,10 +41,13 @@ TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 API = f"https://api.telegram.org/bot{TOKEN}"
 FILE_API = f"https://api.telegram.org/file/bot{TOKEN}"
 
-TOP_K = int(os.environ.get("RAG_TOP_K", "8"))
+TOP_K = int(os.environ.get("RAG_TOP_K", "10"))
 # Справочник настроек — плотная таблица на тысячи строк: без отдельного лимита
 # он вытеснил бы из выдачи обычные статьи справки.
 SETTINGS_TOP_K = int(os.environ.get("SETTINGS_TOP_K", "4"))
+# И только если он вообще близок к вопросу: иначе таблица свойств виджетов
+# подмешивалась к вопросам про доступ, роли и прочее, где она не при чём.
+SETTINGS_MAX_DISTANCE = float(os.environ.get("SETTINGS_MAX_DISTANCE", "0.95"))
 # Стриминг ответа черновиком Telegram: текст виден по мере генерации.
 DRAFT_STREAMING = os.environ.get("DRAFT_STREAMING", "1") == "1"
 DRAFT_INTERVAL = float(os.environ.get("DRAFT_INTERVAL", "0.4"))
@@ -266,7 +269,9 @@ class Rag:
         chunks.sort(key=by_distance)
         reference.sort(key=by_distance)
         # Справочник добавляется к статьям, а не конкурирует с ними за места
-        return chunks[:top_k] + reference[:SETTINGS_TOP_K]
+        relevant = [c for c in reference
+                    if c[2] is None or c[2] <= SETTINGS_MAX_DISTANCE][:SETTINGS_TOP_K]
+        return chunks[:top_k] + relevant
 
     def answer(self, question, history=(), extra_context="", search_query=None, on_delta=None):
         chunks = self.search(search_query or question)

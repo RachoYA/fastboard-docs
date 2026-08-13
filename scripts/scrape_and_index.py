@@ -358,11 +358,15 @@ def index_one(url, filepath, text, collection):
     отвечает «этого нет в базе знаний» на вопрос, ответ на который есть.
     """
     chunks = chunk_text(text)
+    # Название статьи повторяется в каждом фрагменте: без него середина страницы
+    # теряет тему («Вкладка Доступ»), и вопрос своими словами её не находит.
+    first_line = text.lstrip().splitlines()[0] if text.strip() else ""
+    title = first_line.lstrip("# ").split("|")[0].strip()
     ids, docs, metas = [], [], []
     rel = os.path.relpath(filepath, BASE_DIR)
     for j, chunk in enumerate(chunks):
         ids.append(hashlib.md5(f"{url}#{j}".encode()).hexdigest())
-        docs.append(chunk)
+        docs.append(f"{title}\n{chunk}" if title else chunk)
         metas.append({"url": url, "chunk": j, "source": rel})
     if ids:
         collection.upsert(documents=docs, metadatas=metas, ids=ids)
