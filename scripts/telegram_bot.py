@@ -34,7 +34,7 @@ import chromadb
 
 from rag_common import VECTORDB_DIR, CHAT_MODEL, OpenRouterEmbeddingFunction
 from consultant import COLLECTIONS, SYSTEM_PROMPT, retrieve, build_context
-from vision import OLLAMA_URL, VISION_MODEL, describe_image, ollama_chat
+from vision import OLLAMA_URL, VISION_MODEL, describe_image, ollama_chat, ollama_chat_stream
 
 # --- Конфигурация ---
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
@@ -42,6 +42,10 @@ API = f"https://api.telegram.org/bot{TOKEN}"
 FILE_API = f"https://api.telegram.org/file/bot{TOKEN}"
 
 TOP_K = int(os.environ.get("RAG_TOP_K", "8"))
+# Стриминг ответа черновиком Telegram: текст виден по мере генерации.
+DRAFT_STREAMING = os.environ.get("DRAFT_STREAMING", "1") == "1"
+DRAFT_INTERVAL = float(os.environ.get("DRAFT_INTERVAL", "0.7"))
+DRAFT_MAX_CHARS = int(os.environ.get("DRAFT_MAX_CHARS", "3900"))
 HISTORY_TURNS = int(os.environ.get("HISTORY_TURNS", "6"))
 HISTORY_TTL = float(os.environ.get("HISTORY_TTL", "3600"))
 MAX_PDF_PAGES = int(os.environ.get("MAX_PDF_PAGES", "5"))
@@ -158,6 +162,43 @@ class Typing:
         self._stop.set()
 
 
+class Draft:
+    """Черновик Telegram (sendMessageDraft, Bot API 10.0) — стриминг ответа.
+
+    Пока модель пишет, текст проявляется в чате, а не ждёт полной готовности.
+    Черновик в истории не сохраняется: итог всё равно уходит обычным сообщением.
+    """
+
+    def __init__(self, chat_id):
+        self.chat_id = chat_id
+        self.draft_id = int(time.time() * 1000) % 2147483647
+        self._last_sent = 0.0
+        self._shown = ""
+
+    def _push(self, text):
+        try:
+            requests.post(f"{API}/sendMessageDraft",
+                          json={"chat_id": self.chat_id, "draft_id": self.draft_id, "text": text},
+                          timeout=10)
+        except requests.RequestException:
+            pass  # стриминг — украшение: сбой показа не должен ломать ответ
+
+    def update(self, text):
+        """Показывает накопленный текст, не чаще чем раз в DRAFT_INTERVAL."""
+        now = time.time()
+        if (not DRAFT_STREAMING or text == self._shown
+                or now - self._last_sent < DRAFT_INTERVAL
+                or len(text) > DRAFT_MAX_CHARS):
+            return
+        self._last_sent, self._shown = now, text
+        self._push(text)
+
+    def clear(self):
+        """Убирает черновик перед отправкой итогового сообщения."""
+        if DRAFT_STREAMING and self._shown:
+            self._push("")
+
+
 def download_file(file_id):
     """Скачивает файл Telegram в память."""
     info = tg("getFile", file_id=file_id)
@@ -207,7 +248,7 @@ class Rag:
         chunks.sort(key=lambda c: (c[2] is None, c[2] if c[2] is not None else 0))
         return chunks[:top_k]
 
-    def answer(self, question, history=(), extra_context="", search_query=None):
+    def answer(self, question, history=(), extra_context="", search_query=None, on_delta=None):
         chunks = self.search(search_query or question)
         context, _sources = build_context(chunks) if chunks else ("", [])
         parts = []
@@ -223,6 +264,8 @@ class Rag:
         messages.append({"role": "user", "content": "\n\n".join(parts)})
         # Ссылки не приклеиваем списком: нерелевантные фрагменты давали мусорные
         # «источники». Нужную статью модель рекомендует сама — по системному промпту.
+        if on_delta:
+            return ollama_chat_stream(messages, on_delta=on_delta)
         return ollama_chat(messages)
 
 
@@ -387,8 +430,11 @@ def process(batch):
         log.info("chat=%s сообщений=%s вопрос=%r вложений=%s",
                  chat_id, len(batch), question[:120], len(recognized_parts))
 
+        draft = Draft(chat_id)
         answer = rag.answer(question, history.get(chat_id), extra_context=recognized,
-                            search_query=f"{hint} {recognized[:1500]}".strip())
+                            search_query=f"{hint} {recognized[:1500]}".strip(),
+                            on_delta=draft.update)
+        draft.clear()
         send(chat_id, answer, reply_to=reply_to)
         history.add(chat_id, f"{question}\n{recognized[:2000]}".strip(), answer)
 

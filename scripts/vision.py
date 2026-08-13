@@ -10,6 +10,7 @@ qwen3.6 отдаёт пустой ответ.
 """
 
 import base64
+import json
 import os
 import re
 
@@ -72,6 +73,47 @@ def ollama_chat(messages, images=None, model=None, num_predict=None, temperature
     resp.raise_for_status()
     content = (resp.json().get("message") or {}).get("content", "")
     return re.sub(r"<think>.*?</think>", "", content, flags=re.S).strip()
+
+
+def ollama_chat_stream(messages, model=None, num_predict=None, temperature=None, on_delta=None):
+    """То же, что ollama_chat, но с потоковой выдачей.
+
+    on_delta(накопленный_текст) вызывается по мере генерации — чтобы показывать
+    ответ в чате, пока модель ещё пишет. Возвращает полный текст.
+    """
+    options = {
+        "temperature": TEMPERATURE if temperature is None else temperature,
+        "num_predict": NUM_PREDICT if num_predict is None else num_predict,
+    }
+    if NUM_CTX:
+        options["num_ctx"] = int(NUM_CTX)
+
+    parts = []
+    with requests.post(
+        f"{OLLAMA_URL}/api/chat",
+        json={"model": model or CHAT_MODEL, "messages": [dict(m) for m in messages],
+              "stream": True, "think": False, "options": options},
+        timeout=(15, LLM_TIMEOUT), stream=True,
+    ) as resp:
+        resp.raise_for_status()
+        for line in resp.iter_lines(decode_unicode=True):
+            if not line:
+                continue
+            try:
+                chunk = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            piece = (chunk.get("message") or {}).get("content", "")
+            if piece:
+                parts.append(piece)
+                if on_delta:
+                    try:
+                        on_delta("".join(parts))
+                    except Exception:
+                        pass  # проблемы с показом не должны рвать генерацию
+            if chunk.get("done"):
+                break
+    return re.sub(r"<think>.*?</think>", "", "".join(parts), flags=re.S).strip()
 
 
 def describe_image(image_bytes, hint=""):
