@@ -395,6 +395,26 @@ def build_article_index():
     return "\n".join(entries)
 
 
+JSON_PATH = re.compile(r"\b(?:viewSettings|dataSettings)\.[A-Za-z0-9_\[\]]+(?:\.[A-Za-z0-9_\[\]]+)*")
+
+
+def unknown_paths(answer, context):
+    """Пути в JSON, звенья которых не встречаются в поданной таблице свойств.
+
+    Модель уверенно выдаёт правдоподобные, но несуществующие пути вида
+    dataSettings.indicators[].settings.settingsLinks.properties: начало пути
+    настоящее, а придумано последнее звено. Поэтому сверяем каждое звено —
+    выдуманного имени в таблице не будет вовсе.
+    """
+    unknown = []
+    for path in set(JSON_PATH.findall(answer)):
+        parts = [p.replace("[]", "") for p in path.split(".")]
+        missing = [p for p in parts if len(p) >= 4 and p not in context]
+        if missing:
+            unknown.append(path)
+    return sorted(unknown)
+
+
 class Rag:
     """Поиск по документации. Клиенты создаются один раз и переиспользуются."""
 
@@ -574,9 +594,25 @@ class Rag:
         messages.append({"role": "user", "content": "\n\n".join(parts)})
         # Ссылки не приклеиваем списком: нерелевантные фрагменты давали мусорные
         # «источники». Нужную статью модель рекомендует сама — по системному промпту.
-        if on_delta:
-            return clean_service_phrases(ollama_chat_stream(messages, on_delta=on_delta))
-        return clean_service_phrases(ollama_chat(messages))
+        reply = (ollama_chat_stream(messages, on_delta=on_delta) if on_delta
+                 else ollama_chat(messages))
+
+        # Сверка путей в JSON с таблицей свойств: если модель выдумала путь,
+        # переспрашиваем один раз, показав ей допустимые. Это дешевле, чем
+        # клиент, ищущий несуществующую настройку.
+        bad = unknown_paths(reply, context) if context else []
+        if bad:
+            allowed = sorted({".".join(p.split(".")[:3]) for p in JSON_PATH.findall(context)})
+            if allowed:
+                log.info("выдуманные пути в ответе: %s — переспрашиваю", bad[:3])
+                messages.append({"role": "assistant", "content": reply})
+                messages.append({"role": "user", "content":
+                                 "В ответе есть пути, которых нет в таблице свойств: "
+                                 + ", ".join(bad[:5])
+                                 + ". Перепиши ответ, используя только эти пути:\n"
+                                 + "\n".join(allowed[:60])})
+                reply = ollama_chat(messages)
+        return clean_service_phrases(reply)
 
 
 # --- История диалога ---
