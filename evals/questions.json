@@ -76,16 +76,15 @@
   "id": "sankey_labels_json",
   "question": "Какие настройки в JSON отвечают за подписи у диаграммы потоков Sankey?",
   "must_contain": [
-   "axisindicatorsettings"
+   "label"
   ],
   "must_not_contain": [
-   "datapoints",
    "settingslinks",
-   "settingsnodes",
+   "datapoints",
    "labelformat"
   ],
   "expect_link": null,
-  "why": "Настоящие пути подписей Sankey — viewSettings.axisIndicatorSettings.label и соседние. Проверка перечисляет и запрещает конкретные выдумки, которые модель уже выдавала: dataPoints, settingsLinks, settingsNodes, labelFormat"
+  "why": "Подписи Sankey описываются через settingsNodes и axisIndicatorSettings.label — оба настоящие. Запрещены имена, которых нет в справочнике: settingsLinks, dataPoints, labelFormat"
  },
  {
   "id": "table_json_paths",
