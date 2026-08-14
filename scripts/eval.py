@@ -63,7 +63,7 @@ def save_report(report):
 def check_base():
     """Проверки базы знаний без обращения к модели."""
     import chromadb
-    from rag_common import VECTORDB_DIR, DOCS_DIR, OpenRouterEmbeddingFunction
+    from rag_common import VECTORDB_DIR, OpenRouterEmbeddingFunction
 
     checks = []
 
@@ -87,21 +87,33 @@ def check_base():
 
     # Кодировка: одна битая страница означает, что скрапер снова читает ответ
     # как ISO-8859-1 и вся русская документация уходит в базу мусором.
-    fastboard_dir = os.path.join(DOCS_DIR, "fastboard")
+    # Проверяем только страницы из манифеста — то, что реально попало в базу.
+    try:
+        with open(os.path.join(BASE_DIR, "scrape_manifest.json"), encoding="utf-8") as f:
+            pages = json.load(f).get("pages", {})
+    except (OSError, json.JSONDecodeError) as e:
+        add("манифест", False, f"не читается: {e}")
+        pages = {}
+
     broken, with_ocr, total = [], 0, 0
-    for name in os.listdir(fastboard_dir) if os.path.isdir(fastboard_dir) else []:
-        if not name.endswith(".md"):
+    for meta in pages.values():
+        if meta.get("collection") != "fastboard_docs":
+            continue
+        path = os.path.join(BASE_DIR, meta.get("file", ""))
+        try:
+            with open(path, encoding="utf-8") as f:
+                text = f.read()
+        except OSError:
+            broken.append(os.path.basename(path) + " (нет файла)")
             continue
         total += 1
-        with open(os.path.join(fastboard_dir, name), encoding="utf-8") as f:
-            text = f.read()
         if any(marker in text for marker in MOJIBAKE_MARKERS):
-            broken.append(name)
+            broken.append(os.path.basename(path))
         if "Со скриншота" in text:
             with_ocr += 1
     add("кодировка страниц", not broken,
         "все страницы читаемы" if not broken else f"битых: {len(broken)} ({broken[:3]})")
-    add("страниц в справке", total >= 140, f"{total} файлов")
+    add("страниц в справке", total >= 140, f"{total} страниц")
     add("распознанные скриншоты", with_ocr >= 100, f"{with_ocr} страниц с текстом со скриншотов")
 
     # Сверка с манифестом: если страниц в базе меньше, чем обещает манифест,
