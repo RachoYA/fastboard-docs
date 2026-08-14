@@ -187,7 +187,9 @@ def check_answers(only_id=None):
             "id": item["id"], "ok": ok, "seconds": round(elapsed, 1),
             "missing": missing, "forbidden": forbidden,
             "link_ok": link_ok, "error": error,
-            "answer": answer[:1500],
+            # Ответ сохраняем целиком: приёмке нужно доказательство дефекта,
+            # а нарушение часто оказывалось за пределами короткой выдержки.
+            "answer": answer[:6000],
         })
 
         flaws = []
