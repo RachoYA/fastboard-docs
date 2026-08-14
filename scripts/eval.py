@@ -289,8 +289,18 @@ def main():
 
     if run_answers:
         results = check_answers(args.id)
-        report["answers"] = results
-        report["answers_started"] = report["started"]
+        if args.id:
+            # Точечный прогон вливается в результаты последнего полного, а не
+            # затирает их: иначе после проверки одного вопроса приёмке нечего
+            # показать по всему набору.
+            merged = {r["id"]: r for r in previous.get("answers", [])}
+            merged.update({r["id"]: r for r in results})
+            report["answers"] = list(merged.values())
+            report["answers_started"] = previous.get("answers_started", report["started"])
+        else:
+            report["answers"] = results
+            report["answers_started"] = report["started"]
+        results = report["answers"]
         passed = sum(1 for r in results if r["ok"])
         share = passed / len(results) if results else 0
         report["pass_rate"] = round(share, 3)
