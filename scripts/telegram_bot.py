@@ -528,7 +528,9 @@ class Rag:
         # собирается по обычным статьям и путает соседние свойства.
         about_settings = any(word in question.lower() for word in
                              ("json", "свойств", "настройк", "параметр", "settings"))
-        settings_limit = SETTINGS_TOP_K * 2 if about_settings else SETTINGS_TOP_K
+        # Справочник — плотная таблица: на вопрос про JSON нужны десятки строк,
+        # иначе нужное свойство остаётся единственным фрагментом из двух десятков.
+        settings_limit = SETTINGS_TOP_K * 3 if about_settings else SETTINGS_TOP_K
         settings_max_distance = (SETTINGS_MAX_DISTANCE + 0.15 if about_settings
                                  else SETTINGS_MAX_DISTANCE)
 
