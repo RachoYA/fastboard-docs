@@ -165,7 +165,9 @@ def check_answers(only_id=None):
     for item in questions:
         started = time.time()
         try:
-            answer = bot.rag.answer(item["question"])
+            # Тем же путём, что и живой бот: сначала готовые ответы про него
+            # самого и про переход на человека, и только потом поиск по базе.
+            answer = bot.canned_reply(item["question"]) or bot.rag.answer(item["question"])
             error = None
         except Exception as e:
             answer, error = "", f"{type(e).__name__}: {e}"

@@ -624,6 +624,22 @@ HUMAN_PATTERNS = re.compile(
     r"если ты не помог|ты не помог)", re.I)
 
 
+def canned_reply(question):
+    """Готовый ответ на вопросы о самом боте и о переходе на человека.
+
+    Вынесено отдельной функцией, потому что этим же путём идут проверки
+    качества: иначе они бьют прямо в поиск по документации и не видят
+    реального поведения бота.
+    """
+    if not question:
+        return None
+    if HUMAN_PATTERNS.search(question):
+        return "Передаю вопрос живому специалисту.\n\n" + support_contact_text()
+    if ABOUT_PATTERNS.search(question):
+        return GREETING
+    return None
+
+
 def support_contact_text():
     return (SUPPORT_CONTACT if SUPPORT_CONTACT
             else "Напишите вашему менеджеру Fastboard — он подключит поддержку. "
@@ -697,12 +713,9 @@ def process(batch):
 
     has_media = any(extract_media(m)[0] for m in batch)
     if hint and not has_media:
-        if HUMAN_PATTERNS.search(hint):
-            send(chat_id, "Передаю вопрос живому специалисту.\n\n" + support_contact_text(),
-                 reply_to=reply_to)
-            return
-        if ABOUT_PATTERNS.search(hint):
-            send(chat_id, GREETING, reply_to=reply_to)
+        ready = canned_reply(hint)
+        if ready:
+            send(chat_id, ready, reply_to=reply_to)
             return
 
     with Typing(chat_id):
