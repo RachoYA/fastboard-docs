@@ -63,6 +63,9 @@ INDEX_IN_CONTEXT = os.environ.get("INDEX_IN_CONTEXT", "1") == "1"
 ALLOWED_CHATS = {c.strip() for c in os.environ.get("ALLOWED_CHATS", "").split(",") if c.strip()}
 RATE_LIMIT_PER_HOUR = int(os.environ.get("RATE_LIMIT_PER_HOUR", "60"))
 SUPPORT_CONTACT = os.environ.get("SUPPORT_CONTACT", "").strip()
+# Куда уходит обращение при переводе на человека. Пусто — передачи нет,
+# и бот честно об этом говорит, а не обещает несуществующую эскалацию.
+ADMIN_CHAT_ID = os.environ.get("ADMIN_CHAT_ID", "").strip()
 # Кэш ответов: чем больше пользователей, тем чаще повторяются одни и те же
 # вопросы, а каждый ответ стоит около минуты монопольного времени GPU.
 ANSWER_CACHE_TTL = float(os.environ.get("ANSWER_CACHE_TTL", "86400"))
@@ -151,6 +154,27 @@ SERVICE_PHRASES = [
 ]
 
 
+# Названия разделов, которые модель регулярно перевирает. Клиент ищет в
+# интерфейсе точное слово, поэтому приводим к тому, как написано в продукте.
+# Падежи сохраняем: «настраивается в Диспетчер данных» читается как машинный перевод.
+UI_NAMES = [
+    (re.compile(r"\bадмин[- ]панель\b", re.I), "Панель администратора"),
+    (re.compile(r"\bадмин[- ]панели\b", re.I), "Панели администратора"),
+    (re.compile(r"\bадмин[- ]панелью\b", re.I), "Панелью администратора"),
+    (re.compile(r"\bпанел[ьи] админа\b", re.I), "Панель администратора"),
+    (re.compile(r"\bменеджере\s+данных\b", re.I), "Диспетчере данных"),
+    (re.compile(r"\bменеджера\s+данных\b", re.I), "Диспетчера данных"),
+    (re.compile(r"\bменеджером\s+данных\b", re.I), "Диспетчером данных"),
+    (re.compile(r"\bменеджер\s+данных\b", re.I), "Диспетчер данных"),
+]
+
+
+def fix_ui_names(text):
+    for pattern, correct in UI_NAMES:
+        text = pattern.sub(correct, text)
+    return text
+
+
 def clean_service_phrases(text):
     """Убирает из ответа упоминания служебного контекста, сохраняя заглавную букву."""
     def replace(pattern, replacement):
@@ -163,7 +187,7 @@ def clean_service_phrases(text):
 
     for pattern, replacement in SERVICE_PHRASES:
         text = replace(pattern, replacement)
-    return text
+    return fix_ui_names(text)
 
 
 def md_to_html(text):
@@ -578,13 +602,14 @@ answer_cache = AnswerCache()
 
 
 # --- Обработка сообщений ---
-def handle_commands(chat_id, text):
+def handle_commands(chat_id, text, msg_from=None):
     cmd = text.split()[0].split("@")[0].lower()
     if cmd in ("/start", "/help"):
         send(chat_id, GREETING)
         return True
     if cmd == "/human":
-        send(chat_id, "Передаю вопрос живому специалисту.\n\n" + support_contact_text())
+        question = text.partition(" ")[2].strip() or "клиент вызвал /human без пояснения"
+        send(chat_id, support_contact_text(escalate(chat_id, question, msg_from)))
         return True
     if cmd == "/reset":
         history.clear(chat_id)
@@ -624,6 +649,26 @@ HUMAN_PATTERNS = re.compile(
     r"если ты не помог|ты не помог)", re.I)
 
 
+def escalate(chat_id, question, user):
+    """Передаёт обращение живому специалисту в админ-чат.
+
+    Возвращает True, если передача действительно произошла. Обещать
+    «передаю специалисту», когда сообщение никуда не уходит, нельзя:
+    клиент будет ждать ответа, которого не будет.
+    """
+    if not ADMIN_CHAT_ID:
+        return False
+    who = " ".join(filter(None, [
+        (user or {}).get("first_name"), (user or {}).get("last_name"),
+        f"@{user['username']}" if (user or {}).get("username") else None,
+    ])) or "без имени"
+    res = tg("sendMessage", chat_id=ADMIN_CHAT_ID,
+             text=(f"🙋 Клиенту нужен живой специалист\n\n"
+                   f"От: {who} (chat_id {chat_id})\n\n"
+                   f"Вопрос: {question[:1500]}"))
+    return bool(res.get("ok"))
+
+
 def canned_reply(question):
     """Готовый ответ на вопросы о самом боте и о переходе на человека.
 
@@ -634,16 +679,24 @@ def canned_reply(question):
     if not question:
         return None
     if HUMAN_PATTERNS.search(question):
-        return "Передаю вопрос живому специалисту.\n\n" + support_contact_text()
+        return support_contact_text()  # без передачи: её делает вызывающий код
     if ABOUT_PATTERNS.search(question):
         return GREETING
     return None
 
 
-def support_contact_text():
-    return (SUPPORT_CONTACT if SUPPORT_CONTACT
-            else "Напишите вашему менеджеру Fastboard — он подключит поддержку. "
-                 "А я останусь на связи по вопросам документации.")
+def support_contact_text(escalated=False):
+    """Текст перевода на человека — ровно по тому, что произошло на самом деле."""
+    if escalated:
+        return ("Передал ваш вопрос живому специалисту, он ответит здесь же.\n\n"
+                + (SUPPORT_CONTACT + "\n\n" if SUPPORT_CONTACT else "")
+                + "Пока ждёте, могу помочь по документации.")
+    if SUPPORT_CONTACT:
+        return ("Сам передать обращение не могу, но вот куда обратиться:\n"
+                + SUPPORT_CONTACT + "\n\nЯ остаюсь на связи по вопросам документации.")
+    return ("Сам передать обращение я не могу — напрямую с поддержкой не связан. "
+            "Напишите вашему менеджеру Fastboard, он подключит специалистов. "
+            "А я остаюсь на связи по вопросам документации.")
 
 
 def extract_media(msg):
@@ -700,7 +753,7 @@ def process(batch):
     # Команда в пачке выполняется сразу и отдельно от остального
     for msg in batch:
         text = (msg.get("text") or "").strip()
-        if text.startswith("/") and handle_commands(chat_id, text):
+        if text.startswith("/") and handle_commands(chat_id, text, msg.get("from")):
             return
 
     texts = []
@@ -713,6 +766,10 @@ def process(batch):
 
     has_media = any(extract_media(m)[0] for m in batch)
     if hint and not has_media:
+        if HUMAN_PATTERNS.search(hint):
+            passed = escalate(chat_id, hint, batch[-1].get("from"))
+            send(chat_id, support_contact_text(passed), reply_to=reply_to)
+            return
         ready = canned_reply(hint)
         if ready:
             send(chat_id, ready, reply_to=reply_to)

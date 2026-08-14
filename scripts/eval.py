@@ -220,21 +220,66 @@ def report_regressions(previous, results):
     return {"broke": broke, "fixed": fixed}
 
 
+def show_last():
+    """Печатает последний отчёт: приёмке не нужно занимать GPU, чтобы увидеть цифры."""
+    report = load_report()
+    if not report:
+        print("Отчётов ещё нет — запустите python scripts/eval.py")
+        return 1
+
+    print(f"Проверка базы: {report.get('started', '?')}")
+    for check in report.get("base", []):
+        print(f"  {'✅' if check['ok'] else '❌'} {check['check']}: {check['detail']}")
+
+    answers = report.get("answers", [])
+    if answers:
+        passed = sum(1 for a in answers if a["ok"])
+        print(f"\nОтветы (прогон {report.get('answers_from', report.get('started', '?'))}): "
+              f"{passed} из {len(answers)} ({passed / len(answers):.0%})")
+        for a in answers:
+            flaws = []
+            if a.get("missing"):
+                flaws.append(f"нет: {a['missing']}")
+            if a.get("forbidden"):
+                flaws.append(f"лишнее: {a['forbidden']}")
+            if not a.get("link_ok", True):
+                flaws.append("ссылка не та")
+            if a.get("error"):
+                flaws.append(a["error"][:60])
+            print(f"  {'✅' if a['ok'] else '❌'} {a['id']} ({a.get('seconds', '?')} с)"
+                  + (f" — {'; '.join(flaws)}" if flaws else ""))
+    else:
+        print("\nПолного прогона ответов ещё не было.")
+    return 0
+
+
 def main():
     parser = argparse.ArgumentParser(description="Контроль качества базы знаний и ответов.")
     parser.add_argument("--base", action="store_true", help="Только проверки базы (без модели).")
     parser.add_argument("--answers", action="store_true", help="Только эталонные вопросы.")
     parser.add_argument("--id", help="Прогнать один вопрос по идентификатору.")
+    parser.add_argument("--show", action="store_true",
+                        help="Показать результат последнего прогона, ничего не запуская.")
     parser.add_argument("--min-pass", type=float,
                         default=float(os.environ.get("EVAL_MIN_PASS", "0.8")),
                         help="Доля успешных ответов, ниже которой прогон считается упавшим.")
     args = parser.parse_args()
+    if args.show:
+        return show_last()
+
     run_base = args.base or not args.answers
     run_answers = args.answers or not args.base
 
     previous = load_report()
     report = {"started": datetime.now(timezone.utc).isoformat()}
     ok_overall = True
+
+    # Быстрый прогон только по базе не должен стирать результат последнего
+    # полного: иначе показать качество ответов можно, лишь заняв GPU на полчаса.
+    if not run_answers and previous.get("answers"):
+        report["answers"] = previous["answers"]
+        report["pass_rate"] = previous.get("pass_rate")
+        report["answers_from"] = previous.get("answers_started", previous.get("started"))
 
     if run_base:
         checks, counts = check_base()
@@ -245,6 +290,7 @@ def main():
     if run_answers:
         results = check_answers(args.id)
         report["answers"] = results
+        report["answers_started"] = report["started"]
         passed = sum(1 for r in results if r["ok"])
         share = passed / len(results) if results else 0
         report["pass_rate"] = round(share, 3)
