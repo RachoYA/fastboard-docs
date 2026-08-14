@@ -100,7 +100,7 @@
   "id": "ch_code_62",
   "question": "При выполнении запроса получаю ошибку: Code: 62. DB::Exception: Syntax error: failed at position 15 (SELECT). Что делать?",
   "must_contain": [
-   "синтаксис"
+   "синтакс"
   ],
   "must_not_contain": [
    "не могу",
