@@ -61,7 +61,7 @@ INDEX_IN_CONTEXT = os.environ.get("INDEX_IN_CONTEXT", "1") == "1"
 # Кто может пользоваться ботом. Пусто = все: один воркер и один слот GPU,
 # поэтому публичная ссылка без ограничений выстроит очередь из посторонних.
 ALLOWED_CHATS = {c.strip() for c in os.environ.get("ALLOWED_CHATS", "").split(",") if c.strip()}
-RATE_LIMIT_PER_HOUR = int(os.environ.get("RATE_LIMIT_PER_HOUR", "30"))
+RATE_LIMIT_PER_HOUR = int(os.environ.get("RATE_LIMIT_PER_HOUR", "60"))
 SUPPORT_CONTACT = os.environ.get("SUPPORT_CONTACT", "").strip()
 # Кэш ответов: чем больше пользователей, тем чаще повторяются одни и те же
 # вопросы, а каждый ответ стоит около минуты монопольного времени GPU.
@@ -584,10 +584,7 @@ def handle_commands(chat_id, text):
         send(chat_id, GREETING)
         return True
     if cmd == "/human":
-        send(chat_id, "Передаю вопрос живому специалисту.\n\n" + (
-            SUPPORT_CONTACT if SUPPORT_CONTACT
-            else "Напишите вашему менеджеру Fastboard — он подключит поддержку. "
-                 "А я останусь на связи по вопросам документации."))
+        send(chat_id, "Передаю вопрос живому специалисту.\n\n" + support_contact_text())
         return True
     if cmd == "/reset":
         history.clear(chat_id)
@@ -614,6 +611,23 @@ def handle_commands(chat_id, text):
              f"База знаний — фрагментов:\n  " + "\n  ".join(counts or ["нет коллекций"]))
         return True
     return False
+
+
+# Вопросы о самом боте и о переходе на человека нельзя отдавать в поиск по
+# документации: там про них ничего нет, и ответ получался узким или пустым.
+ABOUT_PATTERNS = re.compile(
+    r"(что ты (умеешь|можешь)|чем (ты )?(можешь )?помочь|кто ты|какие у тебя возможност|"
+    r"что ты за бот|чем занимаешься)", re.I)
+HUMAN_PATTERNS = re.compile(
+    r"(с кем связат|позови человек|нужен (живой )?(специалист|человек)|"
+    r"как связаться с поддержк|свяжи с поддержк|нужна помощь человека|"
+    r"если ты не помог|ты не помог)", re.I)
+
+
+def support_contact_text():
+    return (SUPPORT_CONTACT if SUPPORT_CONTACT
+            else "Напишите вашему менеджеру Fastboard — он подключит поддержку. "
+                 "А я останусь на связи по вопросам документации.")
 
 
 def extract_media(msg):
@@ -680,6 +694,16 @@ def process(batch):
             if value and not value.startswith("/"):
                 texts.append(value)
     hint = "\n".join(texts)
+
+    has_media = any(extract_media(m)[0] for m in batch)
+    if hint and not has_media:
+        if HUMAN_PATTERNS.search(hint):
+            send(chat_id, "Передаю вопрос живому специалисту.\n\n" + support_contact_text(),
+                 reply_to=reply_to)
+            return
+        if ABOUT_PATTERNS.search(hint):
+            send(chat_id, GREETING, reply_to=reply_to)
+            return
 
     with Typing(chat_id):
         recognized_parts = []
@@ -753,11 +777,19 @@ def enqueue(msg):
                       "За доступом обратитесь к своему менеджеру Fastboard.")
         return
 
-    allowed, minutes = limiter.allow(chat_id)
+    # Команды и короткие реплики вроде «спасибо» модель не занимают, поэтому
+    # в лимит не идут: иначе разговор обрывается на полуслове, а снять блок
+    # пользователь не может ничем — даже командой.
+    text = (msg.get("text") or "").strip()
+    free = text.startswith("/") or (len(text) <= 20 and not msg.get("photo")
+                                    and not msg.get("document"))
+
+    allowed, minutes = (True, 0) if free else limiter.allow(chat_id)
     if not allowed:
         log.info("chat=%s превысил лимит вопросов", chat_id)
-        send(chat_id, f"Вы задали много вопросов подряд. Продолжим через {minutes} мин — "
-                      "так очередь к модели остаётся живой для всех.")
+        send(chat_id, f"Слишком много вопросов подряд — модель отвечает по одному, "
+                      f"и очередь надо разгрузить. Продолжим через {minutes} мин. "
+                      f"Если вопрос срочный, напишите живому специалисту: /human")
         return
 
     with _pending_lock:
