@@ -80,11 +80,10 @@
    "label"
   ],
   "must_not_contain": [
-   "в контексте нет",
-   "отсутствуют в справочнике"
+   "datapoints"
   ],
   "expect_link": null,
-  "why": "Тест справочника widget_settings: данные есть в viewSettings.axisAdditionalIndicatorSettings.label.properties"
+  "why": "Настоящие пути подписей Sankey — viewSettings.axisIndicatorSettings.label и соседние; путь viewSettings.dataPoints.properties выглядит правдоподобно, но в справочнике его нет"
  },
  {
   "id": "table_json_paths",
