@@ -189,8 +189,25 @@ ICON_GUESSES = re.compile(
     r"\s*\((?=[^)]{0,80}(?:значок|иконк|шестер|замк|карандаш))[^)]{0,120}\)", re.I)
 
 
+# Оговорки, за которыми прячется догадка о названии раздела. Промпт их
+# запрещает, но модель возвращает их из круга в круг.
+HEDGES = [
+    re.compile(r"\s*\((?=[^)]{0,90}(?:в зависимости от верси|или аналогичн|обычно называ))"
+               r"[^)]{0,140}\)", re.I),
+    re.compile(r",?\s*(?:или аналогичн\w+ раздел\w*[^.,;]{0,60}|"
+               r"в зависимости от верси[^.,;]{0,40})", re.I),
+    re.compile(r"\bобычно называется\b", re.I),
+]
+
+
+def drop_hedges(text):
+    for pattern in HEDGES:
+        text = pattern.sub("", text)
+    return text
+
+
 def drop_icon_guesses(text):
-    return ICON_GUESSES.sub("", text)
+    return drop_hedges(ICON_GUESSES.sub("", text))
 
 
 def fix_ui_names(text):
@@ -413,6 +430,8 @@ def doubled_quotes(text):
 
 
 JSON_PATH = re.compile(r"\b(?:viewSettings|dataSettings)\.[A-Za-z0-9_\[\]]+(?:\.[A-Za-z0-9_\[\]]+)*")
+# Имена свойств модель называет и без пути — «например, settingsLinks».
+CAMEL_NAME = re.compile(r"\b[a-z]{3,}[A-Z][A-Za-z]{3,}\b")
 
 
 def unknown_paths(answer, context):
@@ -429,6 +448,10 @@ def unknown_paths(answer, context):
         missing = [p for p in parts if len(p) >= 4 and p not in context]
         if missing:
             unknown.append(path)
+    # Отдельно — имена свойств, названные без пути
+    for name in set(CAMEL_NAME.findall(answer)):
+        if name not in context and not any(name in path for path in unknown):
+            unknown.append(name)
     return sorted(unknown)
 
 
