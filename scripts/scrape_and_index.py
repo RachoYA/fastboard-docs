@@ -278,9 +278,10 @@ def annotate_images(md, session, cache, stats):
     return IMAGE_RE.sub(replace, md)
 
 
-def crawl(start_url, domain_filter, max_pages=200, delay=0.5, ocr=False, ocr_stats=None):
+def crawl(start_url, domain_filter, max_pages=200, delay=0.5, ocr=False, ocr_stats=None,
+          visited=None):
     """Обходит сайт рекурсивно. Возвращает список (url, markdown) без записи на диск."""
-    visited = set()
+    visited = set() if visited is None else visited
     queue = [start_url]
     results = []
 
@@ -333,6 +334,9 @@ def crawl(start_url, domain_filter, max_pages=200, delay=0.5, ocr=False, ocr_sta
 
         time.sleep(delay)
 
+    if len(visited) >= max_pages and queue:
+        print(f"  ⚠️  обход остановлен лимитом max_pages={max_pages}, "
+              f"в очереди осталось {len(queue)} ссылок — часть документации не попадёт в базу")
     if ocr:
         save_ocr_cache(ocr_cache)
     return results
@@ -374,8 +378,10 @@ def index_one(url, filepath, text, collection):
     # Хвост от прошлой версии страницы (если раньше чанков было больше)
     try:
         collection.delete(where={"$and": [{"url": url}, {"chunk": {"$gte": len(ids)}}]})
-    except Exception:
-        pass
+    except Exception as e:
+        # Если хвост не удалить, в выдаче навсегда останутся куски прошлой,
+        # более длинной версии страницы — молчать об этом нельзя.
+        print(f"  ⚠️  не удалось удалить устаревшие чанки {url}: {e}")
     return len(ids)
 
 
@@ -531,26 +537,44 @@ def main():
 
     # Коллекции чистятся не здесь, а после обхода: обход — самая долгая часть,
     # и если процесс прервётся, база знаний не должна остаться пустой.
-    def reset_collections():
-        if not full:
-            return
-        for name in ["fastboard_docs", "clickhouse_docs", REFERENCE_COLLECTION]:
-            try:
-                client.delete_collection(name)
-            except Exception:
-                pass
+    def reset_collection(name):
+        """Чистит одну коллекцию непосредственно перед её наполнением.
 
-    fb_col = client.get_or_create_collection("fastboard_docs", embedding_function=ef)
-    ch_col = client.get_or_create_collection("clickhouse_docs", embedding_function=ef)
-    ref_col = client.get_or_create_collection(REFERENCE_COLLECTION, embedding_function=ef)
+        Раньше при --full удалялись сразу все три, а наполнялись по очереди:
+        всё время обхода ClickHouse бот отвечал по двум пустым коллекциям.
+        """
+        if not full:
+            return client.get_or_create_collection(name, embedding_function=ef)
+        try:
+            client.delete_collection(name)
+        except Exception as e:
+            print(f"  (коллекция {name} не удалена: {e})")
+        return client.get_or_create_collection(name, embedding_function=ef)
 
     # Если база пуста (например, потерян том vectordb) — форсируем полную
     # индексацию, даже в инкрементальном режиме, чтобы не остаться с пустым индексом.
-    fb_force = full or fb_col.count() == 0
-    ch_force = full or ch_col.count() == 0
-    if (fb_force or ch_force) and not args.full:
-        print("ℹ️  Обнаружена пустая/несовместимая база — будет переиндексировано всё "
-              "(возможен повышенный расход эмбеддингов).\n")
+    def indexed_urls(collection_name):
+        """Сколько уникальных страниц реально лежит в коллекции."""
+        try:
+            col = client.get_or_create_collection(collection_name, embedding_function=ef)
+            metas = col.get(include=["metadatas"]).get("metadatas") or []
+            return len({m.get("url") for m in metas if m})
+        except Exception:
+            return 0
+
+    def manifest_urls(collection_name):
+        return sum(1 for m in manifest.get("pages", {}).values()
+                   if m.get("collection") == collection_name)
+
+    # Если в базе страниц меньше, чем обещает манифест, значит прошлый прогон
+    # оборвался на середине. Без этой проверки инкремент считал бы всё
+    # неизменившимся и усечённый индекс жил бы до следующей ручной пересборки.
+    fb_force = full or indexed_urls("fastboard_docs") < manifest_urls("fastboard_docs")
+    ch_force = full or indexed_urls("clickhouse_docs") < manifest_urls("clickhouse_docs")
+    if (fb_force or ch_force) and not full:
+        print("⚠️  База знаний не совпадает с манифестом (прошлый прогон оборвался) — "
+              "переиндексирую заново.")
+
 
     # --- Fastboard ---
     print("📄 Обход Fastboard...")
@@ -564,10 +588,7 @@ def main():
         ocr=ocr,
         ocr_stats=ocr_stats,
     )
-    reset_collections()
-    fb_col = client.get_or_create_collection("fastboard_docs", embedding_function=ef)
-    ch_col = client.get_or_create_collection("clickhouse_docs", embedding_function=ef)
-    ref_col = client.get_or_create_collection(REFERENCE_COLLECTION, embedding_function=ef)
+    fb_col = reset_collection("fastboard_docs")
     fb_stats = sync_collection(
         fb_crawled, os.path.join(DOCS_DIR, "fastboard"), fb_col, manifest,
         force=fb_force, prune=args.prune,
@@ -583,16 +604,20 @@ def main():
         "https://clickhouse.com/docs/ru/sql-reference/functions",
         "https://clickhouse.com/docs/ru/engines/table-engines",
         "https://clickhouse.com/docs/ru/sql-reference/statements",
-        "https://clickhouse.com/docs/ru/getting-started",
+        "https://clickhouse.com/docs/ru/getting-started/quick-start",
     ]
     ch_crawled = []
     seen = set()
     for section_url in ch_sections:
         print(f"  → {section_url}")
-        for url, md in crawl(section_url, "clickhouse.com/docs/ru", max_pages=40, delay=0.3):
-            if url not in seen:
-                seen.add(url)
+        # visited общий на все секции: разделы ClickHouse сильно пересекаются,
+        # и раньше каждая секция заново скачивала одни и те же страницы,
+        # выжигая лимит на дубликатах.
+        for url, md in crawl(section_url, "clickhouse.com/docs/ru", max_pages=120,
+                             delay=0.3, visited=seen):
+            if url not in {u for u, _ in ch_crawled}:
                 ch_crawled.append((url, md))
+    ch_col = reset_collection("clickhouse_docs")
     ch_stats = sync_collection(
         ch_crawled, os.path.join(DOCS_DIR, "clickhouse"), ch_col, manifest,
         force=ch_force, prune=args.prune,
@@ -602,6 +627,7 @@ def main():
 
     # --- Справочник настроек виджетов ---
     print("\n📐 Справочник настроек виджетов (docs/reference)...")
+    ref_col = reset_collection(REFERENCE_COLLECTION)
     ref_stats = sync_reference(ref_col, manifest, force=full or ref_col.count() == 0)
     print(f"✅ Справочник: обновлено файлов {ref_stats['changed']}, "
           f"без изменений {ref_stats['skipped']}")

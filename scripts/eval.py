@@ -104,6 +104,22 @@ def check_base():
     add("страниц в справке", total >= 140, f"{total} файлов")
     add("распознанные скриншоты", with_ocr >= 100, f"{with_ocr} страниц с текстом со скриншотов")
 
+    # Сверка с манифестом: если страниц в базе меньше, чем обещает манифест,
+    # значит прошлый прогон оборвался. Лог при этом выглядит здоровым
+    # («обновлено 0, без изменений 251»), поэтому иначе поломку не заметить.
+    try:
+        with open(os.path.join(BASE_DIR, "scrape_manifest.json"), encoding="utf-8") as f:
+            pages = json.load(f).get("pages", {})
+        for collection_name in ("fastboard_docs", "clickhouse_docs"):
+            promised = sum(1 for m in pages.values() if m.get("collection") == collection_name)
+            col = client.get_or_create_collection(collection_name, embedding_function=ef)
+            metas = col.get(include=["metadatas"]).get("metadatas") or []
+            actual = len({m.get("url") for m in metas if m})
+            add(f"полнота {collection_name}", actual >= promised,
+                f"в базе {actual} страниц, в манифесте {promised}")
+    except Exception as e:
+        add("сверка с манифестом", False, f"не удалось выполнить: {e}")
+
     # Свежесть: манифест обновляется на каждом успешном прогоне индексатора.
     manifest_path = os.path.join(BASE_DIR, "scrape_manifest.json")
     try:

@@ -6,3 +6,6 @@ Wants=gpu-ollama-tunnel.service
 Type=oneshot
 WorkingDirectory=%h/fastboard-docs
 ExecStart=%h/fastboard-docs/scripts/daily_update.sh
+# Бот держит коллекции ChromaDB открытыми и после переиндексации продолжал бы
+# отвечать по старому индексу до ближайшего перезапуска.
+ExecStartPost=/usr/bin/systemctl --user restart fastboard-bot.service

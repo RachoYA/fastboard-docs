@@ -16,8 +16,13 @@ if [ ! -d "$APP_DIR/.git" ]; then
     git clone --quiet "$REPO" "$APP_DIR"
 fi
 cd "$APP_DIR"
+ROOT_LOCK="$APP_DIR/.daily_update.lock"
 
 echo "→ Обновляю код до origin/$BRANCH"
+# Тот же замок, что берёт ночное обновление: git reset --hard поверх файлов,
+# которые в этот момент переписывает индексатор, откатывает свежие страницы.
+exec 9>"$ROOT_LOCK"
+flock -w 600 9 || { echo "!! Не дождался окончания индексации"; exit 1; }
 git fetch --quiet origin "$BRANCH"
 git reset --hard --quiet "origin/$BRANCH"
 git --no-pager log --oneline -1

@@ -30,7 +30,9 @@ CHAT_MODEL = os.environ.get("OPENROUTER_CHAT_MODEL", VISION_MODEL)
 NUM_CTX = os.environ.get("NUM_CTX", "").strip()
 NUM_PREDICT = int(os.environ.get("NUM_PREDICT", "1400"))
 TEMPERATURE = float(os.environ.get("TEMPERATURE", "0.2"))
-LLM_TIMEOUT = float(os.environ.get("LLM_TIMEOUT", "600"))
+# Один зависший запрос блокировал очередь на десять минут: при деградации
+# скорости генерации таймаут в 600 секунд гарантированно вырабатывался целиком.
+LLM_TIMEOUT = float(os.environ.get("LLM_TIMEOUT", "180"))
 
 DESCRIBE_PROMPT = (
     "Внимательно изучи изображение. Ответь на русском языке строго в таком формате:\n\n"

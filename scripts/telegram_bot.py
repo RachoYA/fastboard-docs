@@ -32,7 +32,7 @@ except ImportError:
 
 import chromadb
 
-from rag_common import VECTORDB_DIR, CHAT_MODEL, OpenRouterEmbeddingFunction
+from rag_common import BASE_DIR, VECTORDB_DIR, CHAT_MODEL, OpenRouterEmbeddingFunction
 from consultant import COLLECTIONS, SYSTEM_PROMPT, retrieve, build_context
 from vision import OLLAMA_URL, VISION_MODEL, describe_image, ollama_chat, ollama_chat_stream
 
@@ -63,13 +63,19 @@ INDEX_IN_CONTEXT = os.environ.get("INDEX_IN_CONTEXT", "1") == "1"
 ALLOWED_CHATS = {c.strip() for c in os.environ.get("ALLOWED_CHATS", "").split(",") if c.strip()}
 RATE_LIMIT_PER_HOUR = int(os.environ.get("RATE_LIMIT_PER_HOUR", "30"))
 SUPPORT_CONTACT = os.environ.get("SUPPORT_CONTACT", "").strip()
+# Кэш ответов: чем больше пользователей, тем чаще повторяются одни и те же
+# вопросы, а каждый ответ стоит около минуты монопольного времени GPU.
+ANSWER_CACHE_TTL = float(os.environ.get("ANSWER_CACHE_TTL", "86400"))
+ANSWER_CACHE_SIZE = int(os.environ.get("ANSWER_CACHE_SIZE", "500"))
+WORKERS = int(os.environ.get("WORKERS", "2"))
+QUEUE_SIZE = int(os.environ.get("QUEUE_SIZE", "25"))
 # Стриминг ответа черновиком Telegram: текст виден по мере генерации.
 DRAFT_STREAMING = os.environ.get("DRAFT_STREAMING", "1") == "1"
 DRAFT_INTERVAL = float(os.environ.get("DRAFT_INTERVAL", "0.4"))
 DRAFT_MAX_CHARS = int(os.environ.get("DRAFT_MAX_CHARS", "3900"))
 HISTORY_TURNS = int(os.environ.get("HISTORY_TURNS", "6"))
 HISTORY_TTL = float(os.environ.get("HISTORY_TTL", "3600"))
-MAX_PDF_PAGES = int(os.environ.get("MAX_PDF_PAGES", "5"))
+MAX_PDF_PAGES = int(os.environ.get("MAX_PDF_PAGES", "3"))
 MAX_TEXT_CHARS = int(os.environ.get("MAX_TEXT_CHARS", "20000"))
 STATE_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "state")
 OFFSET_FILE = os.path.join(STATE_DIR, "tg_offset")
@@ -211,7 +217,7 @@ class Draft:
 
     def __init__(self, chat_id):
         self.chat_id = chat_id
-        self.draft_id = int(time.time() * 1000) % 2147483647
+        self.draft_id = (int(time.time() * 1000) ^ threading.get_ident()) % 2147483647
         self._text = ""
         self._shown = ""
         self._stop = threading.Event()
@@ -281,25 +287,32 @@ QUERY_PROMPT = (
 
 
 def build_article_index():
-    """Оглавление: «Название статьи — ссылка» по всем скачанным страницам."""
+    """Оглавление «Название статьи — ссылка» по страницам, которые реально в базе.
+
+    Берём список из манифеста, а не из каталога docs: на диске остаются файлы
+    от прежних схем обхода и исключённого раздела /gostech/, и по ним модель
+    выдавала пользователю ссылки на страницы-заглушки.
+    """
+    try:
+        with open(os.path.join(BASE_DIR, "scrape_manifest.json"), encoding="utf-8") as f:
+            pages = json.load(f).get("pages", {})
+    except (OSError, json.JSONDecodeError) as e:
+        log.warning("Не удалось прочитать манифест для оглавления: %s", e)
+        return ""
+
     entries = []
-    for folder in ("fastboard", "clickhouse"):
-        path = os.path.join(os.path.dirname(VECTORDB_DIR), "docs", folder)
-        if not os.path.isdir(path):
+    for url, meta in sorted(pages.items()):
+        if not url.startswith("http") or meta.get("collection") == "widget_settings":
             continue
-        for name in sorted(os.listdir(path)):
-            if not name.endswith(".md"):
-                continue
-            try:
-                with open(os.path.join(path, name), encoding="utf-8") as f:
-                    head = [next(f, "") for _ in range(4)]
-            except OSError:
-                continue
-            title = head[0].lstrip("# ").split("|")[0].strip()
-            url = next((line.split("Source:", 1)[1].strip()
-                        for line in head if line.startswith("Source:")), "")
-            if title and url:
-                entries.append(f"{title} — {url}")
+        path = os.path.join(BASE_DIR, meta.get("file", ""))
+        title = ""
+        try:
+            with open(path, encoding="utf-8") as f:
+                title = f.readline().lstrip("# ").split("|")[0].strip()
+        except OSError:
+            continue
+        if title:
+            entries.append(f"{title} — {url}")
     log.info("оглавление документации: %s статей", len(entries))
     return "\n".join(entries)
 
@@ -332,7 +345,10 @@ class Rag:
 
     def make_queries(self, question):
         """Разбивает вопрос на поисковые запросы; при сбое ищет как есть."""
-        if not QUERY_SPLIT or len(question) < 25:
+        # Лишний вызов модели стоит около восьми секунд, поэтому короткий
+        # односоставный вопрос ищем как есть.
+        compound = len(question) > 120 or question.count("?") > 1 or " и " in question.lower()
+        if not QUERY_SPLIT or not compound:
             return [question]
         try:
             raw = ollama_chat(
@@ -348,59 +364,71 @@ class Rag:
         return queries or [question]
 
     def search(self, query, top_k=TOP_K):
-        chunks, reference = [], []
+        return self.search_all(query, top_k, split=False)
+
+    def search_all(self, question, top_k=TOP_K, split=True):
+        """Ищет по подзапросам и объединяет результаты без повторов.
+
+        Эмбеддинги всех подзапросов считаются одним обращением к модели, а
+        каждая коллекция опрашивается один раз сразу всеми векторами: раньше
+        это были девять последовательных вызовов на один вопрос.
+        """
+        queries = self.make_queries(question) if split else [question]
+        try:
+            vectors = self.ef(queries)
+        except Exception as e:
+            log.warning("Не удалось посчитать эмбеддинги: %s", e)
+            return []
+
+        best = {}
         for key, col in self.collections():
             limit = SETTINGS_TOP_K if key == "settings" else top_k
             try:
-                found = retrieve(col, query, limit)
+                res = col.query(query_embeddings=vectors, n_results=limit)
             except Exception as e:
                 log.warning("Ошибка поиска в %s: %s", col.name, e)
                 continue
-            (reference if key == "settings" else chunks).extend(found)
+            documents = res.get("documents") or []
+            metadatas = res.get("metadatas") or []
+            distances = res.get("distances") or []
+            for i in range(len(documents)):
+                dists = distances[i] if i < len(distances) else [None] * len(documents[i])
+                for doc, meta, dist in zip(documents[i], metadatas[i], dists):
+                    ident = (key, (meta or {}).get("url"), (meta or {}).get("chunk"))
+                    known = best.get(ident)
+                    if known is None or (dist is not None and dist < known[1][2]):
+                        best[ident] = (key, (doc, meta, dist))
 
-        by_distance = lambda c: (c[2] is None, c[2] if c[2] is not None else 0)
-        chunks.sort(key=by_distance)
-        reference.sort(key=by_distance)
-        # Справочник добавляется к статьям, а не конкурирует с ними за места
+        by_distance = lambda item: (item[2] is None, item[2] if item[2] is not None else 0)
+        chunks = sorted((c for k, c in best.values() if k != "settings"), key=by_distance)
+        reference = sorted((c for k, c in best.values() if k == "settings"), key=by_distance)
         relevant = [c for c in reference
                     if c[2] is None or c[2] <= SETTINGS_MAX_DISTANCE][:SETTINGS_TOP_K]
         return chunks[:top_k] + relevant
-
-    def search_all(self, question, top_k=TOP_K):
-        """Ищет по каждому подзапросу и объединяет результаты без повторов."""
-        queries = self.make_queries(question)
-        if len(queries) == 1:
-            return self.search(queries[0], top_k)
-
-        best = {}
-        for query in queries:
-            for chunk in self.search(query, top_k):
-                doc, meta, dist = chunk
-                key = ((meta or {}).get("url"), (meta or {}).get("chunk"))
-                if key not in best or (dist is not None and dist < best[key][2]):
-                    best[key] = chunk
-        found = sorted(best.values(), key=lambda c: (c[2] is None, c[2] if c[2] is not None else 0))
-        return found[:top_k + SETTINGS_TOP_K]
 
     def answer(self, question, history=(), extra_context="", search_query=None, on_delta=None):
         chunks = self.search_all(search_query or question)
         context, _sources = build_context(chunks) if chunks else ("", [])
         # Вопрос идёт последним: когда он был в начале, модель после длинного
         # контекста цеплялась за предыдущую тему диалога и отвечала на прошлый вопрос.
-        parts = []
-        index = self.article_index()
-        if index:
-            parts.append("Оглавление документации (названия статей и точные ссылки на них). "
-                         "Бери ссылку для рекомендации отсюда — но содержимое статьи, "
-                         "которой нет ниже в контексте, не пересказывай:\n" + index)
-        parts.append("Контекст из документации:\n\n" + (context or "(подходящих материалов не нашлось)"))
+        parts = ["Контекст из документации:\n\n" + (context or "(подходящих материалов не нашлось)")]
         if extra_context:
             parts.append(
                 "Пользователь прислал изображение или файл. Вот что на нём "
                 "(пользователь это уже видел — пересказывать содержимое не нужно, "
                 "используй как условие задачи):\n" + extra_context)
         parts.append(f"---\nВопрос пользователя (отвечай именно на него): {question}")
-        messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+        # Оглавление (около 13 тысяч токенов) держим в системном сообщении, а не в
+        # пользовательском: так начало промпта неизменно от запроса к запросу и
+        # попадает в кэш модели. Когда оглавление лежало в конце, вместе с
+        # контекстом и вопросом, оно пересчитывалось заново на каждый вопрос.
+        system = SYSTEM_PROMPT
+        index = self.article_index()
+        if index:
+            system += ("\n\nОглавление документации (названия статей и точные ссылки). "
+                       "Ссылку для рекомендации бери отсюда, но содержимое статьи, "
+                       "которой нет в контексте вопроса, не пересказывай:\n" + index)
+        messages = [{"role": "system", "content": system}]
         messages += list(history)
         messages.append({"role": "user", "content": "\n\n".join(parts)})
         # Ссылки не приклеиваем списком: нерелевантные фрагменты давали мусорные
@@ -419,7 +447,12 @@ class History:
     def get(self, chat_id):
         with self._lock:
             item = self._data.get(chat_id)
-            if not item or time.time() - item["ts"] > HISTORY_TTL:
+            if not item:
+                return []
+            if time.time() - item["ts"] > HISTORY_TTL:
+                # Просроченные диалоги именно удаляем: раньше они оставались
+                # в памяти навсегда и бот тяжелел с каждым новым чатом.
+                del self._data[chat_id]
                 return []
             return list(item["msgs"])
 
@@ -433,6 +466,48 @@ class History:
     def clear(self, chat_id):
         with self._lock:
             self._data.pop(chat_id, None)
+
+
+class AnswerCache:
+    """Готовые ответы на повторяющиеся вопросы.
+
+    Сбрасывается, когда обновилась база знаний: иначе после ночной
+    переиндексации бот сутки отдавал бы ответы по старой документации.
+    """
+
+    def __init__(self):
+        self._data = {}
+        self._lock = threading.Lock()
+        self._stamp = None
+
+    @staticmethod
+    def _key(question):
+        return " ".join(question.lower().split())
+
+    def _base_stamp(self):
+        try:
+            return os.path.getmtime(os.path.join(BASE_DIR, "scrape_manifest.json"))
+        except OSError:
+            return None
+
+    def get(self, question):
+        stamp = self._base_stamp()
+        with self._lock:
+            if stamp != self._stamp:
+                self._data.clear()
+                self._stamp = stamp
+                return None
+            item = self._data.get(self._key(question))
+            if not item or time.time() - item[1] > ANSWER_CACHE_TTL:
+                return None
+            return item[0]
+
+    def put(self, question, answer):
+        with self._lock:
+            if len(self._data) >= ANSWER_CACHE_SIZE:
+                oldest = min(self._data, key=lambda k: self._data[k][1])
+                del self._data[oldest]
+            self._data[self._key(question)] = (answer, time.time())
 
 
 class RateLimiter:
@@ -459,6 +534,7 @@ class RateLimiter:
 rag = Rag()
 history = History()
 limiter = RateLimiter()
+answer_cache = AnswerCache()
 
 
 # --- Обработка сообщений ---
@@ -599,16 +675,26 @@ def process(batch):
         log.info("chat=%s сообщений=%s вопрос=%r вложений=%s",
                  chat_id, len(batch), question[:120], len(recognized_parts))
 
-        with Draft(chat_id) as draft:
-            answer = rag.answer(question, history.get(chat_id), extra_context=recognized,
-                                search_query=f"{hint} {recognized[:1500]}".strip(),
-                                on_delta=draft.update)
+        # Кэш только для обычных текстовых вопросов вне диалога: ответ с
+        # картинкой или с учётом предыдущих реплик у каждого свой.
+        cacheable = not recognized and not history.get(chat_id)
+        cached = answer_cache.get(question) if cacheable else None
+        if cached:
+            log.info("chat=%s ответ из кэша", chat_id)
+            answer = cached
+        else:
+            with Draft(chat_id) as draft:
+                answer = rag.answer(question, history.get(chat_id), extra_context=recognized,
+                                    search_query=f"{hint} {recognized[:1500]}".strip(),
+                                    on_delta=draft.update)
+            if cacheable and len(answer) > 40:
+                answer_cache.put(question, answer)
         send(chat_id, answer, reply_to=reply_to)
         history.add(chat_id, f"{question}\n{recognized[:2000]}".strip(), answer)
 
 
 # --- Склейка сообщений, очередь и цикл опроса ---
-jobs = queue.Queue(maxsize=200)
+jobs = queue.Queue(maxsize=QUEUE_SIZE)
 
 # Сообщения, пришедшие подряд, — один вопрос. Ждём паузу в разговоре и только
 # потом отвечаем, одним ответом на всю пачку.
@@ -654,12 +740,15 @@ def collector():
             try:
                 jobs.put_nowait(batch)
             except queue.Full:
-                send(batch[0]["chat"]["id"], "Сейчас много запросов, попробуйте через минуту.")
+                send(batch[0]["chat"]["id"],
+                     "Сейчас очередь вопросов заполнена — модель отвечает по одному. "
+                     "Задайте вопрос через несколько минут.")
         time.sleep(0.3)
 
 
 def worker():
-    """GPU обслуживает один запрос за раз — обрабатываем пачки последовательно."""
+    """Генерацию GPU всё равно сериализует, но поиск, скачивание файлов и
+    отправку в Telegram несколько потоков делают параллельно."""
     while True:
         batch = jobs.get()
         try:
@@ -710,8 +799,10 @@ def main():
         {"command": "status", "description": "Состояние сервиса"},
     ])
 
-    threading.Thread(target=worker, daemon=True).start()
+    for _ in range(max(1, WORKERS)):
+        threading.Thread(target=worker, daemon=True).start()
     threading.Thread(target=collector, daemon=True).start()
+    log.info("рабочих потоков: %s, очередь: %s", WORKERS, QUEUE_SIZE)
 
     offset = load_offset()
     while True:
