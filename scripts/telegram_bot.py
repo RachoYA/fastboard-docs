@@ -136,6 +136,36 @@ def tg(method, **params):
     return {"ok": False}
 
 
+# Модель изредка всё же проговаривается про «предоставленный контекст», хотя
+# промпт это запрещает. Полагаться на послушание модели тут нельзя: подменяем
+# служебные обороты на понятные пользователю формулировки.
+SERVICE_PHRASES = [
+    (re.compile(r"\bв предоставленн\w+ (?:контексте|материалах|фрагментах|документации)",
+                re.I), "в документации"),
+    (re.compile(r"\bв приведённ\w+ (?:фрагмент\w*|контексте)", re.I), "в документации"),
+    (re.compile(r"\bв (?:предоставленном )?контексте (нет|отсутству\w+)", re.I),
+     r"в документации \1"),
+    (re.compile(r"\s*\(?\bсогласно (?:предоставленн\w+ )?фрагмент\w*\s*\d*\)?", re.I), ""),
+    (re.compile(r"\bиз фрагмент\w*\s*\d+", re.I), "из документации"),
+    (re.compile(r"\bфрагмент\w*\s+(\d+(?:\s*,\s*\d+)*)", re.I), "документация"),
+]
+
+
+def clean_service_phrases(text):
+    """Убирает из ответа упоминания служебного контекста, сохраняя заглавную букву."""
+    def replace(pattern, replacement):
+        def apply(match):
+            result = match.expand(replacement) if "\\" in replacement else replacement
+            if match.group(0)[:1].isupper() and result[:1].islower():
+                result = result[:1].upper() + result[1:]
+            return result
+        return pattern.sub(apply, text)
+
+    for pattern, replacement in SERVICE_PHRASES:
+        text = replace(pattern, replacement)
+    return text
+
+
 def md_to_html(text):
     """Аккуратная разметка для Telegram: код, жирный, курсив. Остальное — экранируется."""
     blocks = []
@@ -175,6 +205,7 @@ def split_chunks(text, limit=3800):
 
 def send(chat_id, text, reply_to=None):
     """Отправка ответа: сначала HTML-разметкой, при ошибке — простым текстом."""
+    text = clean_service_phrases(text)
     for part in split_chunks(text):
         res = tg("sendMessage", chat_id=chat_id, text=md_to_html(part),
                  parse_mode="HTML", disable_web_page_preview=True,
@@ -443,8 +474,8 @@ class Rag:
         # Ссылки не приклеиваем списком: нерелевантные фрагменты давали мусорные
         # «источники». Нужную статью модель рекомендует сама — по системному промпту.
         if on_delta:
-            return ollama_chat_stream(messages, on_delta=on_delta)
-        return ollama_chat(messages)
+            return clean_service_phrases(ollama_chat_stream(messages, on_delta=on_delta))
+        return clean_service_phrases(ollama_chat(messages))
 
 
 # --- История диалога ---
