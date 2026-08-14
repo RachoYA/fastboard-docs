@@ -48,6 +48,9 @@ SETTINGS_TOP_K = int(os.environ.get("SETTINGS_TOP_K", "4"))
 # И только если он вообще близок к вопросу: иначе таблица свойств виджетов
 # подмешивалась к вопросам про доступ, роли и прочее, где она не при чём.
 SETTINGS_MAX_DISTANCE = float(os.environ.get("SETTINGS_MAX_DISTANCE", "0.95"))
+# Насколько справочник может уступать лучшей найденной статье, чтобы всё ещё
+# попасть в ответ.
+SETTINGS_MARGIN = float(os.environ.get("SETTINGS_MARGIN", "0.08"))
 # Разбиение вопроса на отдельные поисковые запросы. В вопросе вида «директор
 # видит все отчёты, а менеджер только один и только по Сибири» два разных
 # механизма, и один общий вектор находил только второй из них.
@@ -415,8 +418,13 @@ class Rag:
 
         queries = [line.strip(" -•*\t") for line in raw.splitlines() if line.strip()]
         queries = [q for q in queries if 3 < len(q) < 200][:MAX_QUERIES]
+        # Исходная формулировка обязательно участвует в поиске: подзапросы
+        # выходят обобщёнными («настройка прав доступа к дашбордам») и теряют
+        # то, что задал клиент — например «фильтр по своему региону», по
+        # которому и находится нужная статья.
+        queries = [question[:300]] + [q for q in queries if q.lower() != question.lower()]
         log.info("поисковые запросы: %s", queries)
-        return queries or [question]
+        return queries
 
     def search(self, query, top_k=TOP_K):
         return self.search_all(query, top_k, split=False)
@@ -466,8 +474,14 @@ class Rag:
         by_distance = lambda item: (item[2] is None, item[2] if item[2] is not None else 0)
         chunks = sorted((c for k, c in best.values() if k != "settings"), key=by_distance)
         reference = sorted((c for k, c in best.values() if k == "settings"), key=by_distance)
+        # Справочник настроек берём только рядом с лучшими статьями справки:
+        # по абсолютному порогу в выдачу про права доступа попадали свойства
+        # диаграммы Ганта — они ничего не объясняли, но занимали место.
+        best = chunks[0][2] if chunks and chunks[0][2] is not None else None
+        limit_distance = settings_max_distance if best is None else min(
+            settings_max_distance, best + SETTINGS_MARGIN)
         relevant = [c for c in reference
-                    if c[2] is None or c[2] <= settings_max_distance][:settings_limit]
+                    if c[2] is None or c[2] <= limit_distance][:settings_limit]
         return chunks[:top_k] + relevant
 
     def answer(self, question, history=(), extra_context="", search_query=None, on_delta=None):
