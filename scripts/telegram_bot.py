@@ -395,6 +395,18 @@ def build_article_index():
     return "\n".join(entries)
 
 
+# Кавычки в правиле доступа обязаны стоять ровно в одном месте: либо вокруг
+# подстановки в условии, либо внутри значения переменной. Модель регулярно
+# ставит их в обоих — подставится ''Москва'' и правило упадёт.
+QUOTED_PLACEHOLDER = re.compile(r"'\{\{[^}\n]+\}\}'")
+QUOTED_VALUE = re.compile(r"значени\w*[^\n]{0,90}?[`'«]'?([А-Яа-яЁёA-Za-z][^`'»\n]{0,40})'[`»]?")
+
+
+def doubled_quotes(text):
+    """Кавычки и в условии, и в значении переменной — правило не сработает."""
+    return bool(QUOTED_PLACEHOLDER.search(text)) and bool(QUOTED_VALUE.search(text))
+
+
 JSON_PATH = re.compile(r"\b(?:viewSettings|dataSettings)\.[A-Za-z0-9_\[\]]+(?:\.[A-Za-z0-9_\[\]]+)*")
 
 
@@ -600,6 +612,18 @@ class Rag:
         # Сверка путей в JSON с таблицей свойств: если модель выдумала путь,
         # переспрашиваем один раз, показав ей допустимые. Это дешевле, чем
         # клиент, ищущий несуществующую настройку.
+        if doubled_quotes(reply):
+            log.info("кавычки удвоены в правиле — переспрашиваю")
+            messages.append({"role": "assistant", "content": reply})
+            messages.append({"role": "user", "content":
+                             "В ответе кавычки стоят и вокруг подстановки в условии, и "
+                             "внутри значения переменной — при подстановке они удвоятся "
+                             "и правило упадёт. Перепиши ответ так: кавычки только в "
+                             "условии (`WHERE region = '{{region}}'`), значение переменной "
+                             "без кавычек (`Москва`). Покажи, во что превращается условие "
+                             "после подстановки."})
+            reply = ollama_chat(messages)
+
         bad = unknown_paths(reply, context) if context else []
         if bad:
             allowed = sorted({".".join(p.split(".")[:3]) for p in JSON_PATH.findall(context)})
