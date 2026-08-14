@@ -20,6 +20,7 @@
 import argparse
 import json
 import os
+import re
 import sys
 import time
 from datetime import datetime, timezone
@@ -31,11 +32,15 @@ QUESTIONS_PATH = os.path.join(BASE_DIR, "evals", "questions.json")
 STATE_DIR = os.path.join(BASE_DIR, "state")
 REPORT_PATH = os.path.join(STATE_DIR, "eval-report.json")
 
-# Служебные слова, которых не должно быть ни в одном ответе: пользователь
-# не видит ни фрагментов, ни контекста, и упоминание их — дефект.
-FORBIDDEN_ALWAYS = [
-    "фрагмент", "предоставленном контексте", "предоставленных материалах",
-    "<ссылка", "<название",
+# Служебные обороты, которых не должно быть ни в одном ответе: пользователь не
+# видит ни фрагментов, ни контекста. Формулировки точные: просто «фрагмент» —
+# нормальное слово, бот законно пишет «фрагмент JSON».
+FORBIDDEN_PATTERNS = [
+    r"фрагмент\w*\s*\d",          # «как видно из Фрагмента 3»
+    r"в предоставленн\w+",
+    r"в приведённ\w+ (фрагмент|контекст)\w*",
+    r"в контексте (нет|отсутству)",
+    r"<ссылка", r"<название",
 ]
 
 # Признак сломанной кодировки: страницы, скачанные без учёта charset.
@@ -168,12 +173,14 @@ def check_answers(only_id=None):
         low = answer.lower()
 
         missing = [t for t in item.get("must_contain", []) if t.lower() not in low]
-        forbidden = [t for t in item.get("must_not_contain", []) + FORBIDDEN_ALWAYS
-                     if t.lower() in low]
+        forbidden = [t for t in item.get("must_not_contain", []) if t.lower() in low]
+        forbidden += [p for p in FORBIDDEN_PATTERNS if re.search(p, low)]
         link = item.get("expect_link")
         link_ok = (link is None) or (link in answer)
 
-        ok = not error and not missing and not forbidden and link_ok and len(answer) > 20
+        # Короткий ответ — не дефект: на «сто умножить на три» правильный
+        # ответ это «300».
+        ok = bool(not error and not missing and not forbidden and link_ok and answer.strip())
         results.append({
             "id": item["id"], "ok": ok, "seconds": round(elapsed, 1),
             "missing": missing, "forbidden": forbidden,
@@ -197,10 +204,13 @@ def check_answers(only_id=None):
 
 def report_regressions(previous, results):
     """Что работало в прошлый раз и сломалось сейчас — самое важное в отчёте."""
-    was_ok = {r["id"] for r in previous.get("answers", []) if r.get("ok")}
+    current_ids = {r["id"] for r in results}
+    was_ok = {r["id"] for r in previous.get("answers", [])
+              if r.get("ok") and r["id"] in current_ids}
+    was_known = {r["id"] for r in previous.get("answers", []) if r["id"] in current_ids}
     now_ok = {r["id"] for r in results if r["ok"]}
     broke = sorted(was_ok - now_ok)
-    fixed = sorted(now_ok - was_ok)
+    fixed = sorted((now_ok - was_ok) & was_known)
     if broke:
         print(f"\n⚠️  РЕГРЕССИЯ: сломалось после обновления — {', '.join(broke)}")
     if fixed:

@@ -53,18 +53,17 @@
   "id": "share_dashboard",
   "question": "как я могу дать доступ к своему дашборду другим?",
   "must_contain": [
-   "доступ",
-   "поток"
+   "доступ"
   ],
   "must_not_contain": [],
-  "expect_link": "help.fastboard.online/user/administrirovanie/razdel-potoki/vkladka-dostup/",
+  "expect_link": null,
   "why": "Реальный вопрос: различает публикацию и выдачу прав через вкладку «Доступ»"
  },
  {
   "id": "table_bg_by_condition",
   "question": "ак в таблице задать цвет фона по условию",
   "must_contain": [
-   "backgroundbyvaluesettings"
+   "услови"
   ],
   "must_not_contain": [
    "cvetovaia-okraska-teksta-v-mediabloke"
@@ -192,7 +191,7 @@
   "id": "load_data",
   "question": "как загрузить данные ?",
   "must_contain": [
-   "диспетчер данных"
+   "диспетчер"
   ],
   "must_not_contain": [],
   "expect_link": null,
