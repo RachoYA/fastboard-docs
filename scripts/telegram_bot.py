@@ -51,6 +51,11 @@ SETTINGS_MAX_DISTANCE = float(os.environ.get("SETTINGS_MAX_DISTANCE", "0.95"))
 # Насколько справочник может уступать лучшей найденной статье, чтобы всё ещё
 # попасть в ответ.
 SETTINGS_MARGIN = float(os.environ.get("SETTINGS_MARGIN", "0.08"))
+# Сколько статей дочитывать целиком. Нужный ответ часто лежит в соседнем куске
+# той же страницы: поиск находит статью про фильтрацию данных, а порядок
+# настройки переменных описан абзацем ниже и в выдачу не попадает.
+EXPAND_PAGES = int(os.environ.get("EXPAND_PAGES", "3"))
+EXPAND_MAX_CHUNKS = int(os.environ.get("EXPAND_MAX_CHUNKS", "14"))
 # Разбиение вопроса на отдельные поисковые запросы. В вопросе вида «директор
 # видит все отчёты, а менеджер только один и только по Сибири» два разных
 # механизма, и один общий вектор находил только второй из них.
@@ -473,6 +478,7 @@ class Rag:
 
         by_distance = lambda item: (item[2] is None, item[2] if item[2] is not None else 0)
         chunks = sorted((c for k, c in best.values() if k != "settings"), key=by_distance)
+        chunks = self.expand_pages(chunks, best)
         reference = sorted((c for k, c in best.values() if k == "settings"), key=by_distance)
         # Справочник настроек берём только рядом с лучшими статьями справки:
         # по абсолютному порогу в выдачу про права доступа попадали свойства
@@ -483,6 +489,46 @@ class Rag:
         relevant = [c for c in reference
                     if c[2] is None or c[2] <= limit_distance][:settings_limit]
         return chunks[:top_k] + relevant
+
+    def expand_pages(self, chunks, found):
+        """Дочитывает лучшие статьи целиком.
+
+        Поиск возвращает отдельные куски, и ответ регулярно оказывался в
+        соседнем: статья про фильтрацию данных находилась, а порядок настройки
+        переменных, описанный абзацем ниже, в контекст не попадал — и модель
+        придумывала своё правило.
+        """
+        collections = dict(self.collections())
+        top_urls, seen_urls = [], set()
+        for _doc, meta, _dist in chunks:
+            url = (meta or {}).get("url")
+            if url and url not in seen_urls:
+                seen_urls.add(url)
+                top_urls.append(url)
+            if len(top_urls) >= EXPAND_PAGES:
+                break
+
+        known = {((m or {}).get("url"), (m or {}).get("chunk")) for _d, m, _dist in chunks}
+        extra = []
+        for url in top_urls:
+            key = next((col_key for _ident, (col_key, (_d, m, _dist)) in found.items()
+                        if (m or {}).get("url") == url), None)
+            collection = collections.get(key)
+            if collection is None:
+                continue
+            try:
+                page = collection.get(where={"url": url}, include=["documents", "metadatas"])
+            except Exception as e:
+                log.warning("Не удалось дочитать страницу %s: %s", url, e)
+                continue
+            for doc, meta in zip(page.get("documents") or [], page.get("metadatas") or []):
+                ident = ((meta or {}).get("url"), (meta or {}).get("chunk"))
+                if ident not in known:
+                    known.add(ident)
+                    extra.append((doc, meta, None))
+
+        extra.sort(key=lambda c: ((c[1] or {}).get("url", ""), (c[1] or {}).get("chunk", 0)))
+        return chunks + extra[:EXPAND_MAX_CHUNKS]
 
     def answer(self, question, history=(), extra_context="", search_query=None, on_delta=None):
         chunks = self.search_all(search_query or question)
