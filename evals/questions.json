@@ -167,7 +167,7 @@
    "svg"
   ],
   "must_not_contain": [
-   "нельзя",
+   "загрузить svg нельзя",
    "не поддерж"
   ],
   "expect_link": null,
