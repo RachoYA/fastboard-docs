@@ -13,6 +13,7 @@ import base64
 import json
 import os
 import re
+import time
 
 import requests
 
@@ -32,7 +33,7 @@ NUM_PREDICT = int(os.environ.get("NUM_PREDICT", "1400"))
 TEMPERATURE = float(os.environ.get("TEMPERATURE", "0.2"))
 # Один зависший запрос блокировал очередь на десять минут: при деградации
 # скорости генерации таймаут в 600 секунд гарантированно вырабатывался целиком.
-LLM_TIMEOUT = float(os.environ.get("LLM_TIMEOUT", "180"))
+LLM_TIMEOUT = float(os.environ.get("LLM_TIMEOUT", "240"))
 
 DESCRIBE_PROMPT = (
     "Внимательно изучи изображение. Ответь на русском языке строго в таком формате:\n\n"
@@ -55,6 +56,25 @@ OCR_PROMPT = (
 )
 
 
+# Слот генерации на GPU один и делится с другими сервисами, поэтому запрос
+# может не уложиться в таймаут просто из-за чужой очереди. Один повтор дешевле,
+# чем потерянный вопрос пользователя.
+RETRIES = int(os.environ.get("LLM_RETRIES", "1"))
+
+
+def _with_retry(call, what):
+    last = None
+    for attempt in range(RETRIES + 1):
+        try:
+            return call()
+        except (requests.Timeout, requests.ConnectionError) as e:
+            last = e
+            if attempt < RETRIES:
+                print(f"  повтор запроса к модели ({what}): {type(e).__name__}")
+                time.sleep(2)
+    raise last
+
+
 def ollama_chat(messages, images=None, model=None, num_predict=None, temperature=None):
     """Запрос к Ollama /api/chat. think=False обязателен: модель рассуждающая."""
     msgs = [dict(m) for m in messages]
@@ -66,14 +86,17 @@ def ollama_chat(messages, images=None, model=None, num_predict=None, temperature
     }
     if NUM_CTX:
         options["num_ctx"] = int(NUM_CTX)
-    resp = requests.post(
-        f"{OLLAMA_URL}/api/chat",
-        json={"model": model or CHAT_MODEL, "messages": msgs,
-              "stream": False, "think": False, "options": options},
-        timeout=(15, LLM_TIMEOUT),
-    )
-    resp.raise_for_status()
-    content = (resp.json().get("message") or {}).get("content", "")
+    def call():
+        resp = requests.post(
+            f"{OLLAMA_URL}/api/chat",
+            json={"model": model or CHAT_MODEL, "messages": msgs,
+                  "stream": False, "think": False, "options": options},
+            timeout=(15, LLM_TIMEOUT),
+        )
+        resp.raise_for_status()
+        return resp
+
+    content = (_with_retry(call, "ответ").json().get("message") or {}).get("content", "")
     return re.sub(r"<think>.*?</think>", "", content, flags=re.S).strip()
 
 
@@ -91,12 +114,17 @@ def ollama_chat_stream(messages, model=None, num_predict=None, temperature=None,
         options["num_ctx"] = int(NUM_CTX)
 
     parts = []
-    with requests.post(
-        f"{OLLAMA_URL}/api/chat",
-        json={"model": model or CHAT_MODEL, "messages": [dict(m) for m in messages],
-              "stream": True, "think": False, "options": options},
-        timeout=(15, LLM_TIMEOUT), stream=True,
-    ) as resp:
+
+    def open_stream():
+        return requests.post(
+            f"{OLLAMA_URL}/api/chat",
+            json={"model": model or CHAT_MODEL, "messages": [dict(m) for m in messages],
+                  "stream": True, "think": False, "options": options},
+            timeout=(15, LLM_TIMEOUT), stream=True)
+
+    # Повтор имеет смысл только пока не пришло ни одного куска ответа:
+    # иначе пользователь увидел бы начало ответа дважды.
+    with _with_retry(open_stream, "поток") as resp:
         resp.raise_for_status()
         for line in resp.iter_lines(decode_unicode=True):
             if not line:
