@@ -54,8 +54,8 @@ SETTINGS_MARGIN = float(os.environ.get("SETTINGS_MARGIN", "0.08"))
 # Сколько статей дочитывать целиком. Нужный ответ часто лежит в соседнем куске
 # той же страницы: поиск находит статью про фильтрацию данных, а порядок
 # настройки переменных описан абзацем ниже и в выдачу не попадает.
-EXPAND_PAGES = int(os.environ.get("EXPAND_PAGES", "3"))
-EXPAND_MAX_CHUNKS = int(os.environ.get("EXPAND_MAX_CHUNKS", "14"))
+EXPAND_PAGES = int(os.environ.get("EXPAND_PAGES", "6"))
+EXPAND_MAX_CHUNKS = int(os.environ.get("EXPAND_MAX_CHUNKS", "24"))
 # Разбиение вопроса на отдельные поисковые запросы. В вопросе вида «директор
 # видит все отчёты, а менеджер только один и только по Сибири» два разных
 # механизма, и один общий вектор находил только второй из них.
