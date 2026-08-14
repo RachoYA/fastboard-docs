@@ -1,0 +1,7 @@
+[Unit]
+Description=Резервная копия базы знаний и настроек консультанта
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/fastboard-docs
+ExecStart=%h/fastboard-docs/scripts/backup.sh

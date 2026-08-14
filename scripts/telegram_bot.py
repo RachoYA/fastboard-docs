@@ -57,6 +57,12 @@ MAX_QUERIES = int(os.environ.get("MAX_QUERIES", "3"))
 # Нужно, чтобы бот рекомендовал точную статью, даже если её фрагмент не попал в
 # выдачу поиска — иначе он давал ссылку на «похожую» статью.
 INDEX_IN_CONTEXT = os.environ.get("INDEX_IN_CONTEXT", "1") == "1"
+
+# Кто может пользоваться ботом. Пусто = все: один воркер и один слот GPU,
+# поэтому публичная ссылка без ограничений выстроит очередь из посторонних.
+ALLOWED_CHATS = {c.strip() for c in os.environ.get("ALLOWED_CHATS", "").split(",") if c.strip()}
+RATE_LIMIT_PER_HOUR = int(os.environ.get("RATE_LIMIT_PER_HOUR", "30"))
+SUPPORT_CONTACT = os.environ.get("SUPPORT_CONTACT", "").strip()
 # Стриминг ответа черновиком Telegram: текст виден по мере генерации.
 DRAFT_STREAMING = os.environ.get("DRAFT_STREAMING", "1") == "1"
 DRAFT_INTERVAL = float(os.environ.get("DRAFT_INTERVAL", "0.4"))
@@ -71,11 +77,26 @@ OFFSET_FILE = os.path.join(STATE_DIR, "tg_offset")
 TEXT_EXT = (".txt", ".md", ".sql", ".csv", ".log", ".json", ".yaml", ".yml", ".xml", ".ini", ".conf")
 IMAGE_EXT = (".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".heic")
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(message)s",
-    stream=sys.stdout,
-)
+def mask_secrets(text):
+    """Прячет токен бота в тексте: он попадает в URL внутри исключений requests."""
+    return text.replace(TOKEN, "<токен>") if TOKEN and TOKEN in text else text
+
+
+class MaskingFormatter(logging.Formatter):
+    """Маскирует токен в готовой строке журнала, включая тексты исключений.
+
+    requests кладёт полный URL в сообщение об ошибке, поэтому строка вида
+    «Max retries exceeded with url: /bot<токен>/getUpdates» уносила токен
+    в systemd-журнал открытым текстом.
+    """
+
+    def format(self, record):
+        return mask_secrets(super().format(record))
+
+
+_handler = logging.StreamHandler(sys.stdout)
+_handler.setFormatter(MaskingFormatter("%(asctime)s %(levelname)s %(message)s"))
+logging.basicConfig(level=logging.INFO, handlers=[_handler])
 log = logging.getLogger("fb-bot")
 
 GREETING = (
@@ -86,7 +107,10 @@ GREETING = (
     "(ошибки, графики, SQL, настройки);\n"
     "• читаю PDF и текстовые файлы (.txt, .md, .sql, .csv, .log).\n\n"
     "Просто задайте вопрос или пришлите скриншот — можно с подписью, что именно интересует.\n\n"
-    "Команды: /help — справка, /reset — очистить историю диалога, /status — состояние сервиса."
+    "Я AI-консультант и отвечаю по документации: могу ошибаться, важное перепроверяйте "
+    "по статьям, ссылки на которые я привожу. Нужен живой специалист — команда /human.\n\n"
+    "Команды: /help — справка, /human — связаться с человеком, /reset — очистить историю "
+    "диалога, /status — состояние сервиса."
 )
 
 
@@ -411,8 +435,30 @@ class History:
             self._data.pop(chat_id, None)
 
 
+class RateLimiter:
+    """Не больше RATE_LIMIT_PER_HOUR вопросов на чат в час."""
+
+    def __init__(self):
+        self._hits = {}
+        self._lock = threading.Lock()
+
+    def allow(self, chat_id):
+        if RATE_LIMIT_PER_HOUR <= 0:
+            return True, 0
+        now = time.time()
+        with self._lock:
+            hits = [t for t in self._hits.get(chat_id, []) if now - t < 3600]
+            if len(hits) >= RATE_LIMIT_PER_HOUR:
+                self._hits[chat_id] = hits
+                return False, int((3600 - (now - hits[0])) / 60) + 1
+            hits.append(now)
+            self._hits[chat_id] = hits
+            return True, 0
+
+
 rag = Rag()
 history = History()
+limiter = RateLimiter()
 
 
 # --- Обработка сообщений ---
@@ -420,6 +466,12 @@ def handle_commands(chat_id, text):
     cmd = text.split()[0].split("@")[0].lower()
     if cmd in ("/start", "/help"):
         send(chat_id, GREETING)
+        return True
+    if cmd == "/human":
+        send(chat_id, "Передаю вопрос живому специалисту.\n\n" + (
+            SUPPORT_CONTACT if SUPPORT_CONTACT
+            else "Напишите вашему менеджеру Fastboard — он подключит поддержку. "
+                 "А я останусь на связи по вопросам документации."))
         return True
     if cmd == "/reset":
         history.clear(chat_id)
@@ -567,6 +619,21 @@ _pending_lock = threading.Lock()
 
 def enqueue(msg):
     """Кладёт сообщение в буфер чата; в работу пачка уйдёт после паузы."""
+    chat_id = msg["chat"]["id"]
+
+    if ALLOWED_CHATS and str(chat_id) not in ALLOWED_CHATS:
+        log.info("chat=%s не в списке доступа — отказ", chat_id)
+        send(chat_id, "Этот бот доступен ограниченному кругу пользователей. "
+                      "За доступом обратитесь к своему менеджеру Fastboard.")
+        return
+
+    allowed, minutes = limiter.allow(chat_id)
+    if not allowed:
+        log.info("chat=%s превысил лимит вопросов", chat_id)
+        send(chat_id, f"Вы задали много вопросов подряд. Продолжим через {minutes} мин — "
+                      "так очередь к модели остаётся живой для всех.")
+        return
+
     with _pending_lock:
         item = _pending.setdefault(msg["chat"]["id"], {"msgs": [], "last": 0.0})
         item["msgs"].append(msg)
@@ -602,7 +669,7 @@ def worker():
             try:
                 send(batch[0]["chat"]["id"],
                      "Извините, при обработке запроса произошла ошибка. "
-                     f"Попробуйте ещё раз.\n\nДетали: {type(e).__name__}: {str(e)[:200]}")
+                     f"Попробуйте ещё раз.\n\nДетали: {mask_secrets(f'{type(e).__name__}: {e}')[:200]}")
             except Exception:
                 pass
         finally:
@@ -638,6 +705,7 @@ def main():
 
     tg("setMyCommands", commands=[
         {"command": "help", "description": "Что умеет бот"},
+        {"command": "human", "description": "Связаться с живым специалистом"},
         {"command": "reset", "description": "Очистить историю диалога"},
         {"command": "status", "description": "Состояние сервиса"},
     ])

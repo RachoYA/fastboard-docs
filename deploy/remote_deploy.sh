@@ -26,7 +26,7 @@ echo "→ Зависимости"
 [ -d .venv ] || python3 -m venv .venv
 ./.venv/bin/pip install --quiet --upgrade pip
 ./.venv/bin/pip install --quiet -r requirements.txt
-chmod +x scripts/daily_update.sh scripts/telegram_bot.py
+chmod +x scripts/daily_update.sh scripts/telegram_bot.py scripts/watchdog.sh scripts/backup.sh
 
 if [ ! -f .env ]; then
     echo "!! Нет $APP_DIR/.env — скопируйте .env.example и заполните (токен бота, адрес модели)."
@@ -39,6 +39,8 @@ cp deploy/user/*.service deploy/user/*.timer "$HOME/.config/systemd/user/"
 systemctl --user daemon-reload
 systemctl --user enable --now gpu-ollama-tunnel.service
 systemctl --user enable --now fastboard-docs-update.timer
+systemctl --user enable --now fastboard-watchdog.timer
+systemctl --user enable --now fastboard-backup.timer
 systemctl --user enable fastboard-bot.service
 systemctl --user restart fastboard-bot.service
 

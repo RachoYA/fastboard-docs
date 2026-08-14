@@ -1,0 +1,7 @@
+[Unit]
+Description=Сторож консультанта Fastboard: бот, туннель к GPU, место на диске
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/fastboard-docs
+ExecStart=%h/fastboard-docs/scripts/watchdog.sh
