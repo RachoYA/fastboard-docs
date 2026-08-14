@@ -95,11 +95,11 @@
   "id": "table_json_paths",
   "question": "как в JSON настроек таблицы задаётся фон ячейки по SQL-условию",
   "must_contain": [
-   "bodysettings"
+   "background"
   ],
   "must_not_contain": [],
   "expect_link": null,
-  "why": "Фон ячейки по SQL-условию — viewSettings.bodySettings.backgroundColorBy.byCondition.sqlCondition"
+  "why": "Фон ячейки по SQL-условию описывается несколькими настоящими ветками справочника (bodySettings — 279 упоминаний, backgroundByValueSettings — 36), поэтому требуем не конкретную, а любую настоящую: имя должно содержать background, а выдумки ловит сверка путей с таблицей"
  },
  {
   "id": "ch_code_62",
