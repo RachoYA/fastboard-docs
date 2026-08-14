@@ -1,0 +1,106 @@
+[
+  {
+    "id": "knopka-otkryt-stranicu",
+    "question": "Нужно чтобы при нажатии на кнопку открывалась веб страница",
+    "must_contain": ["гиперссылк"],
+    "must_not_contain": ["нет информации", "нет описания"],
+    "expect_link": "help.fastboard.online/user/konstruktor-dasbordov/parametry-vidzeta/",
+    "why": "Ответ есть только на скриншоте статьи о параметрах виджета: проверяет, что распознавание картинок дошло до поиска"
+  },
+  {
+    "id": "gantt-est",
+    "question": "есть ли диграма ганта",
+    "must_contain": ["ганта"],
+    "must_not_contain": ["нет описания", "не поддерживает"],
+    "expect_link": "help.fastboard.online/user/roadmap/v1110/",
+    "why": "Реальный вопрос с опечатками: проверяет устойчивость поиска и полноту обхода справки"
+  },
+  {
+    "id": "gantt-kak-postroit",
+    "question": "как построить диаграмму Ганта?",
+    "must_contain": ["ганта"],
+    "must_not_contain": ["нет описания"],
+    "expect_link": null,
+    "why": "Тот же виджет, но вопрос о настройке"
+  },
+  {
+    "id": "razgranichenie-dostupa",
+    "question": "Хочу сделать так, чтобы директор видел все отчёты, а менеджер Васисуалий только один и только с фильтром Сибирь",
+    "must_contain": ["sls", "rls"],
+    "must_not_contain": [],
+    "expect_link": null,
+    "why": "Вопрос сразу о двух механизмах: проверяет разбиение вопроса на поисковые запросы и полноту ответа"
+  },
+  {
+    "id": "dostup-k-potoku",
+    "question": "как дать пользователю доступ только к одному потоку",
+    "must_contain": ["поток"],
+    "must_not_contain": [],
+    "expect_link": "help.fastboard.online/user/administrirovanie/razdel-potoki/vkladka-dostup/",
+    "why": "Проверяет, что рекомендуется статья про вкладку «Доступ», а не «похожая» статья про RLS"
+  },
+  {
+    "id": "tablica-razrez-gruppy",
+    "question": "В таблице у меня есть разрез Группы, который делит всю таблицу на Брони, У юристов и т.п. Как настроить?",
+    "must_contain": ["разрез"],
+    "must_not_contain": ["нет описания"],
+    "expect_link": null,
+    "why": "Реальный вопрос про группировку в таблице"
+  },
+  {
+    "id": "cvet-po-usloviyu-json",
+    "question": "как в таблице задать цвет фона по условию, какое свойство в JSON",
+    "must_contain": ["backgroundcolorby"],
+    "must_not_contain": [],
+    "expect_link": null,
+    "why": "Проверяет, что подключается справочник настроек виджетов с путями в JSON"
+  },
+  {
+    "id": "clickhouse-code-62",
+    "question": "Ошибка Code: 62. DB::Exception: Syntax error: failed at position 21 при CREATE TABLE events user_id UInt64, created DateTime ENGINE = MergeTree",
+    "must_contain": ["скобк"],
+    "must_not_contain": ["нет описания этого сценария"],
+    "expect_link": null,
+    "why": "Разбор ошибки SQL обязателен: отказ вместо разбора — дефект"
+  },
+  {
+    "id": "clickhouse-mergetree",
+    "question": "Что такое движок MergeTree?",
+    "must_contain": ["mergetree"],
+    "must_not_contain": [],
+    "expect_link": null,
+    "why": "Базовый вопрос по ClickHouse"
+  },
+  {
+    "id": "sozdanie-dashborda",
+    "question": "как создать дашборд в Fastboard",
+    "must_contain": ["проект"],
+    "must_not_contain": ["нет описания"],
+    "expect_link": null,
+    "why": "Самый частый вопрос новичка: проверяет, что справочник настроек не вытеснил обычные статьи"
+  },
+  {
+    "id": "arifmetika",
+    "question": "Сто умножить на 3",
+    "must_contain": ["300"],
+    "must_not_contain": ["погод", "select"],
+    "expect_link": null,
+    "why": "Проверяет, что бот не путает контекст диалога и не превращает бытовой вопрос в задачу про SQL"
+  },
+  {
+    "id": "ne-po-teme",
+    "question": "Расскажи какая погода в нижнем",
+    "must_contain": [],
+    "must_not_contain": ["select", "clickhouse-запрос"],
+    "expect_link": null,
+    "why": "Вопрос не по теме: короткий ответ без документации"
+  },
+  {
+    "id": "nesushchestvuyushchaya-funkciya",
+    "question": "как в Fastboard настроить автоматическую отправку дашборда голубиной почтой",
+    "must_contain": [],
+    "must_not_contain": ["настройках виджета найдите", "перейдите в раздел голуб"],
+    "expect_link": null,
+    "why": "Провокация: бот не должен выдумывать несуществующие разделы и кнопки"
+  }
+]
