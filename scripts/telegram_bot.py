@@ -380,9 +380,18 @@ class Rag:
             log.warning("Не удалось посчитать эмбеддинги: %s", e)
             return []
 
+        # Вопрос про JSON и свойства виджета обслуживает справочник настроек:
+        # ему нужно больше места в выдаче и мягче порог близости, иначе ответ
+        # собирается по обычным статьям и путает соседние свойства.
+        about_settings = any(word in question.lower() for word in
+                             ("json", "свойств", "настройк", "параметр", "settings"))
+        settings_limit = SETTINGS_TOP_K * 2 if about_settings else SETTINGS_TOP_K
+        settings_max_distance = (SETTINGS_MAX_DISTANCE + 0.15 if about_settings
+                                 else SETTINGS_MAX_DISTANCE)
+
         best = {}
         for key, col in self.collections():
-            limit = SETTINGS_TOP_K if key == "settings" else top_k
+            limit = settings_limit if key == "settings" else top_k
             try:
                 res = col.query(query_embeddings=vectors, n_results=limit)
             except Exception as e:
@@ -403,7 +412,7 @@ class Rag:
         chunks = sorted((c for k, c in best.values() if k != "settings"), key=by_distance)
         reference = sorted((c for k, c in best.values() if k == "settings"), key=by_distance)
         relevant = [c for c in reference
-                    if c[2] is None or c[2] <= SETTINGS_MAX_DISTANCE][:SETTINGS_TOP_K]
+                    if c[2] is None or c[2] <= settings_max_distance][:settings_limit]
         return chunks[:top_k] + relevant
 
     def answer(self, question, history=(), extra_context="", search_query=None, on_delta=None):
