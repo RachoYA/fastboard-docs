@@ -477,7 +477,9 @@ class Rag:
                         best[ident] = (key, (doc, meta, dist))
 
         by_distance = lambda item: (item[2] is None, item[2] if item[2] is not None else 0)
-        chunks = sorted((c for k, c in best.values() if k != "settings"), key=by_distance)
+        # Обрезаем по top_k ДО дочитывания страниц: иначе дочитанные куски
+        # отправляются в конец списка и тут же срезаются этой же обрезкой.
+        chunks = sorted((c for k, c in best.values() if k != "settings"), key=by_distance)[:top_k]
         chunks = self.expand_pages(chunks, best)
         reference = sorted((c for k, c in best.values() if k == "settings"), key=by_distance)
         # Справочник настроек берём только рядом с лучшими статьями справки:
@@ -488,7 +490,7 @@ class Rag:
             settings_max_distance, best + SETTINGS_MARGIN)
         relevant = [c for c in reference
                     if c[2] is None or c[2] <= limit_distance][:settings_limit]
-        return chunks[:top_k] + relevant
+        return chunks + relevant
 
     def expand_pages(self, chunks, found):
         """Дочитывает лучшие статьи целиком.
