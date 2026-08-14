@@ -177,10 +177,21 @@ UI_NAMES = [
 ]
 
 
+# Модель дорисовывает, как выглядит элемент интерфейса: «значок замка или
+# шестерёнки». В документации таких описаний нет, а клиент ищет глазами именно
+# то, что ему назвали, и не находит.
+ICON_GUESSES = re.compile(
+    r"\s*\((?=[^)]{0,80}(?:значок|иконк|шестер|замк|карандаш))[^)]{0,120}\)", re.I)
+
+
+def drop_icon_guesses(text):
+    return ICON_GUESSES.sub("", text)
+
+
 def fix_ui_names(text):
     for pattern, correct in UI_NAMES:
         text = pattern.sub(correct, text)
-    return text
+    return drop_icon_guesses(text)
 
 
 def clean_service_phrases(text):
