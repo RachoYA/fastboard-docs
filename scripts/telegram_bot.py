@@ -76,6 +76,10 @@ SUPPORT_CONTACT = os.environ.get("SUPPORT_CONTACT", "").strip()
 ADMIN_CHAT_ID = os.environ.get("ADMIN_CHAT_ID", "").strip()
 # Кэш ответов: чем больше пользователей, тем чаще повторяются одни и те же
 # вопросы, а каждый ответ стоит около минуты монопольного времени GPU.
+# Вопросы вне темы отсекаются до обращения к модели: бот — консультант по
+# продукту, а не справочник обо всём, и каждый такой ответ занимает GPU,
+# из-за чего ждут клиенты с настоящими вопросами.
+OFFTOPIC_DISTANCE = float(os.environ.get("OFFTOPIC_DISTANCE", "0.94"))
 ANSWER_CACHE_TTL = float(os.environ.get("ANSWER_CACHE_TTL", "86400"))
 ANSWER_CACHE_SIZE = int(os.environ.get("ANSWER_CACHE_SIZE", "500"))
 WORKERS = int(os.environ.get("WORKERS", "2"))
@@ -465,6 +469,35 @@ def unknown_paths(answer, context):
     return sorted(unknown)
 
 
+# Слова предметной области: если хоть одно есть в вопросе, он считается
+# рабочим, даже когда поиск сработал плохо. «Какие роли есть в ФБ» ищется
+# хуже вопроса про погоду, но отвечать на него надо.
+DOMAIN_WORDS = (
+    "fastboard", "фастборд", " фб", "clickhouse", "кликхаус", "дашборд", "виджет",
+    "диаграм", "график", "таблиц", "отчёт", "отчет", "проект", "поток", "доступ",
+    "прав", "рол", "пользовател", "групп", "фильтр", "разрез", "показател", "данн",
+    "источник", "подключ", "модел", "sql", "запрос", "экспорт", "импорт", "публик",
+    "скрипт", "обновлен", "расписан", "лиценз", "тенант", "sls", "rls", "pls", "ols",
+    "цвет", "шрифт", "ячейк", "легенд", "ось", "оси", "кэш", "ошибк", "code:",
+    "select", "where", "join", "виз", "настрой", "макет", "страниц", "триггер",
+)
+
+OFFTOPIC_REPLY = (
+    "Я консультант по Fastboard и ClickHouse — на вопросы вне этой темы не отвечаю.\n\n"
+    "Спросите про дашборды и виджеты, подключение данных, права доступа, SQL или "
+    "ошибки ClickHouse — с этим помогу. Нужен живой специалист — /human."
+)
+
+
+def looks_offtopic(question, chunks):
+    """Вопрос не про продукт: ни одного слова темы и поиск ничего не нашёл."""
+    low = question.lower()
+    if any(word in low for word in DOMAIN_WORDS):
+        return False
+    best = min((c[2] for c in chunks if c[2] is not None), default=None)
+    return best is None or best > OFFTOPIC_DISTANCE
+
+
 class Rag:
     """Поиск по документации. Клиенты создаются один раз и переиспользуются."""
 
@@ -625,6 +658,11 @@ class Rag:
 
     def answer(self, question, history=(), extra_context="", search_query=None, on_delta=None):
         chunks = self.search_all(search_query or question)
+
+        # Вопрос вне темы: отвечаем сразу, не занимая модель
+        if not extra_context and looks_offtopic(question, chunks):
+            log.info("вопрос вне темы — отвечаю без модели")
+            return OFFTOPIC_REPLY
         context, _sources = build_context(chunks) if chunks else ("", [])
         # Вопрос идёт последним: когда он был в начале, модель после длинного
         # контекста цеплялась за предыдущую тему диалога и отвечала на прошлый вопрос.
