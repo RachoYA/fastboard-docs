@@ -408,7 +408,10 @@ def build_article_index():
 
     entries = []
     for url, meta in sorted(pages.items()):
-        if not url.startswith("http") or meta.get("collection") == "widget_settings":
+        # Только справка Fastboard: на неё бот и ссылается, а статьи ClickHouse
+        # в рекомендациях почти не участвуют. Оглавление читается моделью на
+        # каждый вопрос, и каждая лишняя тысяча токенов — почти секунда ожидания.
+        if not url.startswith("http") or meta.get("collection") != "fastboard_docs":
             continue
         path = os.path.join(BASE_DIR, meta.get("file", ""))
         title = ""
