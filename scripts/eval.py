@@ -167,7 +167,15 @@ def check_answers(only_id=None):
         try:
             # Тем же путём, что и живой бот: сначала готовые ответы про него
             # самого и про переход на человека, и только потом поиск по базе.
-            answer = bot.canned_reply(item["question"]) or bot.rag.answer(item["question"])
+            # Диалог и вложение из набора: часть дефектов видна только в
+            # продолжении разговора или на присланном файле, а не в вопросе,
+            # заданном с чистого листа.
+            dialog = []
+            for asked, replied in item.get("history", []):
+                dialog.append({"role": "user", "content": asked})
+                dialog.append({"role": "assistant", "content": replied})
+            answer = bot.canned_reply(item["question"]) or bot.rag.answer(
+                item["question"], dialog, extra_context=item.get("attachment", ""))
             error = None
         except Exception as e:
             answer, error = "", f"{type(e).__name__}: {e}"
