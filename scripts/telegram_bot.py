@@ -18,7 +18,7 @@ import re
 import sys
 import threading
 import time
-from collections import deque
+from collections import Counter, deque
 
 import requests
 
@@ -32,7 +32,7 @@ except ImportError:
 
 import chromadb
 
-from rag_common import BASE_DIR, VECTORDB_DIR, CHAT_MODEL, OpenRouterEmbeddingFunction
+from rag_common import BASE_DIR, DOCS_DIR, VECTORDB_DIR, CHAT_MODEL, OpenRouterEmbeddingFunction
 from consultant import COLLECTIONS, SYSTEM_PROMPT, retrieve, build_context
 from vision import OLLAMA_URL, VISION_MODEL, describe_image, ollama_chat, ollama_chat_stream
 
@@ -472,6 +472,13 @@ def unknown_paths(answer, context):
 # Слова предметной области: если хоть одно есть в вопросе, он считается
 # рабочим, даже когда поиск сработал плохо. «Какие роли есть в ФБ» ищется
 # хуже вопроса про погоду, но отвечать на него надо.
+#
+# Это лишь ручная страховка. Основной словарь собирается из самой документации
+# (domain_stems) и обновляется вместе с ней: ручной список неизбежно отстаёт от
+# продукта. В релизе 2.2.0 появились MCP, каталог данных, теги проектов и
+# коннектор к Parquet — ни одного из этих слов здесь нет, и бот отвечал «это
+# вне моей темы» на вопрос про собственный релиз, который сам же пересказал
+# минутой раньше.
 DOMAIN_WORDS = (
     "fastboard", "фастборд", " фб", "clickhouse", "кликхаус", "дашборд", "виджет",
     "диаграм", "график", "таблиц", "отчёт", "отчет", "проект", "поток", "доступ",
@@ -489,10 +496,87 @@ OFFTOPIC_REPLY = (
 )
 
 
+# Общие слова русского языка. Их держим списком осознанно: в отличие от
+# терминов продукта, этот набор не меняется от релиза к релизу. Без него
+# словарём темы становится любое «как», «что», «сколько», и отсечка перестаёт
+# работать вовсе.
+STOP_WORDS = frozenset("""
+как что кто где когда куда зачем почему какой какая какое какие каком какую каких
+это эта этот эти тот там тут вот все всё весь вся всех всем ещё еще уже или либо
+для при если также так тоже чтобы над под без через между перед после про
+его ему него она они оно мой моя мое моё мне меня мной тебе тебя вам вас нам нас
+себя свой своя свои сам сама само сами есть быть был была было были буду будет
+можно нужно надо нельзя могу может можешь мочь хочу хочет нужен нужна нужны
+дай дать даёт делать сделать сделай скажи расскажи покажи знаешь знаю понимаю
+пожалуйста спасибо привет здравствуйте добрый день вечер утро
+нет да ага ладно хорошо плохо ясно понятно точно вроде кажется просто очень
+один два три четыре пять шесть семь восемь девять десять сто много мало сколько
+новый новая новое новые нового старый другой другая другие такой такая такие
+верхний верхнем верхняя нижний нижнем нижняя левый левом левая правый правом правая
+здесь сюда оттуда потом сейчас теперь всегда никогда часто иногда снова опять
+работает работать сделано готово пишешь пишет написал сказал говорит
+""".split())
+
+WORD_RE = re.compile(r"[а-яёa-z0-9]{3,}")
+# Сравниваем по первым пяти буквам: этого хватает, чтобы «релизе» нашлось по
+# «релизы», а «столица» не спуталась со «столбцами».
+STEM = 5
+_vocab = {"stems": frozenset(), "ts": 0.0}
+_vocab_lock = threading.Lock()
+
+
+def build_domain_stems():
+    """Словарь темы из скачанной документации: заголовки и нечастые слова.
+
+    Заголовки берём целиком — там нет вёрстки. Из текста статей берём слова,
+    которые встречаются в нескольких документах, но не в каждом четвёртом:
+    редкое слово — это термин, а повсеместное — либо служебное, либо мусор
+    шаблона (icon, svg, uploads), и по нему тему определять нельзя.
+
+    В отличие от оглавления, здесь не сверяемся с манифестом: лишнее слово от
+    прежнего обхода лишь смягчит отсечку, а устаревшей ссылки клиенту не даст.
+    """
+    heads, body, total = set(), Counter(), 0
+    for root, _dirs, names in os.walk(DOCS_DIR):
+        for name in names:
+            if not name.endswith(".md"):
+                continue
+            try:
+                with open(os.path.join(root, name), encoding="utf-8") as f:
+                    text = f.read().lower()
+            except OSError:
+                continue
+            total += 1
+            for line in text.splitlines():
+                if line.startswith("#"):
+                    heads.update(WORD_RE.findall(line))
+            body.update(set(WORD_RE.findall(text)))
+    if not total:
+        log.warning("документация для словаря темы не найдена: %s", DOCS_DIR)
+        return frozenset()
+    popular = max(2, int(total * 0.25))
+    words = (heads | {w for w, n in body.items() if 2 <= n <= popular}) - STOP_WORDS
+    stems = {w[:STEM] for w in words} - {w[:STEM] for w in STOP_WORDS}
+    log.info("словарь темы: %s слов из %s статей", len(words), total)
+    return frozenset(stems)
+
+
+def domain_stems():
+    """Словарь с суточным обновлением — база пополняется по ночам."""
+    with _vocab_lock:
+        if time.time() - _vocab["ts"] > 3600:
+            _vocab["stems"] = build_domain_stems()
+            _vocab["ts"] = time.time()
+        return _vocab["stems"]
+
+
 def looks_offtopic(question, chunks):
     """Вопрос не про продукт: ни одного слова темы и поиск ничего не нашёл."""
     low = question.lower()
     if any(word in low for word in DOMAIN_WORDS):
+        return False
+    stems = domain_stems()
+    if any(w not in STOP_WORDS and w[:STEM] in stems for w in WORD_RE.findall(low)):
         return False
     best = min((c[2] for c in chunks if c[2] is not None), default=None)
     return best is None or best > OFFTOPIC_DISTANCE
@@ -659,8 +743,12 @@ class Rag:
     def answer(self, question, history=(), extra_context="", search_query=None, on_delta=None):
         chunks = self.search_all(search_query or question)
 
-        # Вопрос вне темы: отвечаем сразу, не занимая модель
-        if not extra_context and looks_offtopic(question, chunks):
+        # Вопрос вне темы: отвечаем сразу, не занимая модель. В начатом
+        # разговоре отсечка не действует: реплика-продолжение («а теперь проверь
+        # заполнение», «ты же сам это написал в прошлом сообщении») слов темы не
+        # содержит и ищется плохо, а клиент получал отказ посреди своего же
+        # разговора — и вернуться к теме ему было нечем.
+        if not extra_context and not history and looks_offtopic(question, chunks):
             log.info("вопрос вне темы — отвечаю без модели")
             return OFFTOPIC_REPLY
         context, _sources = build_context(chunks) if chunks else ("", [])
