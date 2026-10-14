@@ -104,7 +104,8 @@ def ollama_chat_stream(messages, model=None, num_predict=None, temperature=None,
     """То же, что ollama_chat, но с потоковой выдачей.
 
     on_delta(накопленный_текст) вызывается по мере генерации — чтобы показывать
-    ответ в чате, пока модель ещё пишет. Возвращает полный текст.
+    ответ в чате, пока модель ещё пишет. False из on_delta обрывает поток.
+    Возвращает полный текст.
     """
     options = {
         "temperature": TEMPERATURE if temperature is None else temperature,
@@ -138,9 +139,11 @@ def ollama_chat_stream(messages, model=None, num_predict=None, temperature=None,
                 parts.append(piece)
                 if on_delta:
                     try:
-                        on_delta("".join(parts))
+                        keep = on_delta("".join(parts))
                     except Exception:
-                        pass  # проблемы с показом не должны рвать генерацию
+                        keep = True
+                    if keep is False:
+                        break
             if chunk.get("done"):
                 break
     return re.sub(r"<think>.*?</think>", "", "".join(parts), flags=re.S).strip()
