@@ -82,12 +82,12 @@ journalctl -u fastboard-docs-update.service -n 50
 |---|---|
 | `gpu-ollama-tunnel.service` | SSH-туннель к Ollama на GPU-сервере → `127.0.0.1:11434` |
 | `fastboard-bot.service` | Telegram-бот `scripts/telegram_bot.py` |
+| `fastboard-web.service` | HTTP API виджета Фиби `scripts/web_api.py` → `:8080` |
 | `fastboard-docs-update.timer` | Ежедневный инкремент базы знаний в 03:00 |
 
 Файлы юнитов — в [`deploy/user/`](user/), раскладываются деплой-скриптом
 в `~/.config/systemd/user/`.
 
-## Доступ к GPU-серверу
 
 Модель живёт на отдельной машине с A100 и слушает только localhost, поэтому
 сервер консультанта ходит к ней через SSH-туннель:

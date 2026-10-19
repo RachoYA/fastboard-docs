@@ -47,7 +47,9 @@ systemctl --user enable --now fastboard-docs-update.timer
 systemctl --user enable --now fastboard-watchdog.timer
 systemctl --user enable --now fastboard-backup.timer
 systemctl --user enable fastboard-bot.service
+systemctl --user enable fastboard-web.service
 systemctl --user restart fastboard-bot.service
+systemctl --user restart fastboard-web.service
 
 echo "→ Проверка"
 sleep 6
@@ -57,6 +59,11 @@ curl -fsS -m 15 http://127.0.0.1:11434/api/version >/dev/null \
     || { echo "!! Ollama на GPU-сервере недоступна через туннель"; exit 1; }
 systemctl --user is-active fastboard-bot.service >/dev/null \
     || { echo "!! Бот не запустился"; journalctl --user -u fastboard-bot.service -n 40 --no-pager; exit 1; }
+systemctl --user is-active fastboard-web.service >/dev/null \
+    || { echo "!! Веб-API Фиби не запустился"; journalctl --user -u fastboard-web.service -n 40 --no-pager; exit 1; }
+curl -fsS -m 10 http://127.0.0.1:8080/health >/dev/null \
+    || { echo "!! /health веб-API не отвечает"; exit 1; }
 
-echo "✓ Готово: бот работает, модель доступна"
+echo "✓ Готово: бот и веб-API работают, модель доступна"
 journalctl --user -u fastboard-bot.service -n 5 --no-pager
+journalctl --user -u fastboard-web.service -n 5 --no-pager

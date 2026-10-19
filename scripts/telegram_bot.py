@@ -34,6 +34,8 @@ import chromadb
 
 from rag_common import BASE_DIR, DOCS_DIR, VECTORDB_DIR, CHAT_MODEL, OpenRouterEmbeddingFunction
 from consultant import COLLECTIONS, SYSTEM_PROMPT, retrieve, build_context
+from handoff import HANDOFF_MARK, is_handoff, is_specialist_request
+from rag_service import run_answer
 from vision import OLLAMA_URL, VISION_MODEL, describe_image, ollama_chat, ollama_chat_stream
 
 # --- Конфигурация ---
@@ -751,103 +753,13 @@ class Rag:
         return chunks + extra[:EXPAND_MAX_CHUNKS]
 
     def answer(self, question, history=(), extra_context="", search_query=None, on_delta=None):
-        chunks = self.search_all(search_query or question)
-
-        # Вопрос вне темы: отвечаем сразу, не занимая модель. В начатом
-        # разговоре отсечка не действует: реплика-продолжение («а теперь проверь
-        # заполнение», «ты же сам это написал в прошлом сообщении») слов темы не
-        # содержит и ищется плохо, а клиент получал отказ посреди своего же
-        # разговора — и вернуться к теме ему было нечем.
-        if not extra_context and not history and looks_offtopic(question, chunks):
-            log.info("вопрос вне темы — отвечаю без модели")
-            return OFFTOPIC_REPLY
-        context, _sources = build_context(chunks) if chunks else ("", [])
-        # В сообщении от лица пользователя — только то, что он прислал на самом
-        # деле. Когда найденная документация лежала здесь же, модель считала её
-        # присланной клиентом: на скриншот таблицы она отвечала «вы прислали
-        # только фрагмент документации по виджету „Таблица“, а не сам файл» —
-        # хотя таблица была у неё перед глазами и она её же и описала.
-        #
-        # Вопрос идёт последним: когда он был в начале, модель после длинного
-        # контекста цеплялась за предыдущую тему диалога и отвечала на прошлый вопрос.
-        parts = []
-        if extra_context:
-            parts.append(
-                "Я прислал вложение (изображение или файл). Вот что в нём "
-                "(пересказывать содержимое мне не нужно — я его видел, "
-                "используй как условие задачи):\n" + extra_context)
-        parts.append(f"Вопрос пользователя (отвечай именно на него): {question}")
-        # Оглавление (около 13 тысяч токенов) держим в системном сообщении, а не в
-        # пользовательском: так начало промпта неизменно от запроса к запросу и
-        # попадает в кэш модели. Когда оглавление лежало в конце, вместе с
-        # контекстом и вопросом, оно пересчитывалось заново на каждый вопрос.
-        system = SYSTEM_PROMPT
-        index = self.article_index()
-        if index:
-            system += ("\n\nОглавление документации (названия статей и точные ссылки). "
-                       "Ссылку для рекомендации бери отсюда, но содержимое статьи, "
-                       "которой нет в контексте вопроса, не пересказывай:\n" + index)
-        # Контекст — в конце системного сообщения: он меняется на каждый вопрос,
-        # а всё, что до него, остаётся неизменным и по-прежнему берётся из кэша.
-        system += ("\n\nКонтекст из документации. Это выдержки, подобранные поиском по "
-                   "справке под текущий вопрос: пользователь их не присылал и не видит. "
-                   "Никогда не пиши, что клиент прислал документацию или её фрагменты, и "
-                   "не путай их с его вложением.\n\n"
-                   + (context or "(подходящих материалов не нашлось)"))
-        messages = [{"role": "system", "content": system}]
-        messages += list(history)
-        messages.append({"role": "user", "content": "\n\n".join(parts)})
-        # Ссылки не приклеиваем списком: нерелевантные фрагменты давали мусорные
-        # «источники». Нужную статью модель рекомендует сама — по системному промпту.
-        reply = (ollama_chat_stream(messages, on_delta=on_delta) if on_delta
-                 else ollama_chat(messages))
-
-        # Сверка путей в JSON с таблицей свойств: если модель выдумала путь,
-        # переспрашиваем один раз, показав ей допустимые. Это дешевле, чем
-        # клиент, ищущий несуществующую настройку.
-        if doubled_quotes(reply):
-            log.info("кавычки удвоены в правиле — переспрашиваю")
-            messages.append({"role": "assistant", "content": reply})
-            messages.append({"role": "user", "content":
-                             "В ответе кавычки стоят и вокруг подстановки в условии, и "
-                             "внутри значения переменной — при подстановке они удвоятся "
-                             "и правило упадёт. Выбери ОДИН вариант и выдержи его во всём "
-                             "ответе: либо условие `WHERE region = '{{region}}'` со значением "
-                             "`Москва` без кавычек, либо условие "
-                             "`WHERE region in ( {{regions}} )` со значением `'Москва'` в "
-                             "кавычках. Заголовок и примеры не должны противоречить друг "
-                             "другу. Покажи, во что превращается условие после подстановки."})
-            reply = ollama_chat(messages)
-
-        bad = unknown_paths(reply, context) if context else []
-        if bad:
-            # Целиком: обрезка до трёх звеньев заставляла модель считать, что
-            # более глубоких имён не существует, и заявлять это клиенту.
-            allowed = sorted(set(JSON_PATH.findall(context)))
-            if allowed:
-                log.info("выдуманные пути в ответе: %s — переспрашиваю", bad[:3])
-                messages.append({"role": "assistant", "content": reply})
-                messages.append({"role": "user", "content":
-                                 "В ответе есть пути, которых нет в таблице свойств: "
-                                 + ", ".join(bad[:5])
-                                 + ". Перепиши ответ, используя только эти пути:\n"
-                                 + "\n".join(allowed[:120])
-                                 + "\n\nЭто выдержка из таблицы, а не весь список: "
-                                 "не утверждай, что других путей не существует."})
-                reply = ollama_chat(messages)
-
-            # Если переспрос не помог, строки с выдуманными путями просто
-            # убираются: пусть ответ будет короче, чем отправит клиента искать
-            # настройку, которой нет.
-            still_bad = unknown_paths(reply, context)
-            if still_bad:
-                kept = [line for line in reply.splitlines()
-                        if not any(bad in line for bad in still_bad)]
-                cleaned = "\n".join(kept).strip()
-                log.info("убраны строки с выдуманными путями: %s", still_bad[:3])
-                if len(cleaned) > 200:
-                    reply = cleaned
-        return clean_service_phrases(reply)
+        return run_answer(
+            self, question,
+            history=history,
+            extra_context=extra_context,
+            search_query=search_query,
+            on_delta=on_delta,
+        )
 
 
 # --- История диалога ---
@@ -943,7 +855,24 @@ class RateLimiter:
             return True, 0
 
 
-rag = Rag()
+_rag_instance = None
+
+
+def _ensure_rag():
+    global _rag_instance
+    if _rag_instance is None:
+        _rag_instance = Rag()
+    return _rag_instance
+
+
+class _RagProxy:
+    """Ленивая обёртка: Chroma/эмбеддинги не поднимаются при import telegram_bot."""
+
+    def __getattr__(self, name):
+        return getattr(_ensure_rag(), name)
+
+
+rag = _RagProxy()
 history = History()
 limiter = RateLimiter()
 answer_cache = AnswerCache()
@@ -1131,7 +1060,7 @@ def process(batch):
 
     # Просьба о человеке обрабатывается даже со скриншотом: клиент, приславший
     # картинку с подписью «позовите человека», иначе не попадал к специалисту.
-    if hint and HUMAN_PATTERNS.search(hint):
+    if hint and (HUMAN_PATTERNS.search(hint) or is_specialist_request(hint)):
         passed = escalate(chat_id, hint, batch[-1].get("from"))
         send(chat_id, support_contact_text(passed), reply_to=reply_to)
         return
@@ -1189,8 +1118,12 @@ def process(batch):
                 answer = rag.answer(question, history.get(chat_id), extra_context=recognized,
                                     search_query=f"{hint} {recognized[:1500]}".strip(),
                                     on_delta=draft.update)
-            if cacheable and len(answer) > 40:
+            if cacheable and len(answer) > 40 and not is_handoff(answer):
                 answer_cache.put(question, answer)
+        if is_handoff(answer):
+            passed = escalate(chat_id, question, batch[-1].get("from"))
+            send(chat_id, support_contact_text(passed), reply_to=reply_to)
+            return
         # Если модель пообещала передать обращение, а передачи не было —
         # передаём сейчас, чтобы обещание не осталось словами.
         if ESCALATION_PROMISE.search(answer):
