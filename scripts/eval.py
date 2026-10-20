@@ -163,6 +163,32 @@ def check_base():
     ]
     add("словарь темы", len(bot.domain_stems()) >= 1000,
         f"{len(bot.domain_stems())} основ из документации")
+
+    # Статья в словаре считается один раз. С 23.09.2026 «мира» из описания
+    # виджета «Карта» набирало пять «статей» из трёх: релиз 2.2.0 доступен по
+    # двум адресам, а подборка /category/ повторяет вступления чужих статей, —
+    # и «кто выиграл чемпионат мира» снова доходил до модели. Проверяем на
+    # искусственной справке, чтобы поломка ловилась независимо от живой базы.
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        def page(name, url, text):
+            with open(os.path.join(tmp, name), "w", encoding="utf-8") as f:
+                f.write(f"# Статья\n\nSource: https://help.fastboard.online/user/{url}\n\n{text}\n")
+        for i in range(20):
+            page(f"filler{i}.md", f"filler/{i}/", f"страница номер {i}")
+        for i in range(5):
+            page(f"amber{i}.md", f"amber/{i}/", f"янтарный виджет, раздел {i}")
+        page("dup_a.md", "roadmap/v220/", "малахитовый релиз")
+        page("dup_b.md", "roadmap/220/", "малахитовый релиз")
+        page("category.md", "category/визуализации", "малахитовый релиз, подборка")
+        # Пять файлов со словом, но статей три: два адреса одной страницы и подборка
+        page("mal1.md", "mal/1/", "малахитовый узор")
+        page("mal2.md", "mal/2/", "малахитовый камень")
+        stems = bot.build_domain_stems(tmp)
+    add("словарь считает статью один раз",
+        "янтар" in stems and "малах" not in stems,
+        "дубли и подборки не накручивают счётчик статей" if "малах" not in stems
+        else "слово из трёх статей попало в словарь: дубли страниц посчитаны отдельно")
     # Поиск не задействуем (chunks=[]): проверяем именно словарь, а не порог
     # по расстоянию — иначе проверка потребует эмбеддингов и станет платной.
     cut = [q for q in ontopic if bot.looks_offtopic(q, [])]
