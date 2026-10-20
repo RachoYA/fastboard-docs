@@ -62,6 +62,7 @@ docs/
 | Модель эмбеддингов | Ollama | `bge-m3` (1024-мерные, многоязычные) |
 | Канал до GPU | SSH-туннель | `gpu-ollama-tunnel.service` → `127.0.0.1:11434` |
 | Телеграм-бот | systemd | `fastboard-bot.service` |
+| API виджета на сайте документации | systemd + nginx | `fastboard-web.service` → `https://fibi.grachia.ru` |
 
 ### Установка
 
@@ -175,15 +176,22 @@ python scripts/scrape_and_index.py     # проиндексировать
 
 ```bash
 ./.venv/bin/python scripts/telegram_bot.py     # вручную
-systemctl --user status fastboard-bot          # как сервис
-journalctl --user -u fastboard-bot -f          # логи
+systemctl status fastboard-bot                 # как сервис
+journalctl -u fastboard-bot -f                 # логи
 ```
+
+## Веб-виджет Фиби
+
+`scripts/web_api.py` — HTTP API для виджета на сайте документации
+(help.fastboard.online). Отвечает тем же ядром, что и бот (`scripts/rag_service.py`):
+тот же промпт, та же база и те же проверки ответа, — и стоит в общей очереди
+к GPU. Методы, лимиты и настройка nginx — в [`deploy/README.md`](deploy/README.md#api-виджета-фиби).
 
 ## Эксплуатация
 
 | Юнит | Что делает |
 |---|---|
-| `fastboard-watchdog.timer` | раз в 5 минут проверяет бота, туннель к GPU, доступность модели и место на диске; при сбое пишет в журнал и шлёт сообщение в `ADMIN_CHAT_ID` (не чаще раза в час) |
+| `fastboard-watchdog.timer` | раз в 5 минут проверяет бота, веб-API, туннель к GPU, доступность модели и место на диске; при сбое пишет в журнал и шлёт сообщение в `ADMIN_CHAT_ID` (не чаще раза в час) |
 | `fastboard-backup.timer` | ежедневно в 04:30 архивирует `.env`, `vectordb/`, `state/` и манифест — то, что не восстанавливается из git; хранит последние `BACKUP_KEEP` копий |
 
 Каталог копий задаётся `BACKUP_DIR`. По умолчанию он локальный: это спасает от
@@ -231,6 +239,7 @@ python scripts/eval.py --answers --id gantt-est   # один вопрос
 ## Деплой
 
 Код деплоится через GitHub Actions: пуш в `master` → `.github/workflows/deploy.yml`
-→ `deploy/remote_deploy.sh` на сервере (обновление кода, зависимостей,
-systemd-юнитов и перезапуск бота). Подробности и ручной запуск — в
-[`deploy/README.md`](deploy/README.md).
+→ `deploy/remote_deploy.sh` на сервере (обновление кода и зависимостей,
+перезапуск бота и веб-API). Службы системные: юниты из `deploy/system/` ставит
+разовая настройка под root, `sudo bash deploy/system/install.sh`. Подробности
+и ручной запуск — в [`deploy/README.md`](deploy/README.md).

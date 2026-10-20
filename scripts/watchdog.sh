@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Сторож: проверяет, что бот жив и канал к модели на месте.
-# Запускается таймером раз в 5 минут (deploy/user/fastboard-watchdog.timer).
+# Запускается таймером раз в 5 минут (deploy/system/fastboard-watchdog.timer).
 #
 # При сбое пишет в журнал и, если задан ADMIN_CHAT_ID, шлёт сообщение в Telegram.
 # Повторные сообщения об одной и той же поломке не шлются чаще раза в час —
@@ -21,18 +21,31 @@ if [ -f .env ]; then
 fi
 OLLAMA_URL="${OLLAMA_URL:-http://127.0.0.1:11434}"
 
+# Какой systemd спрашивать: службы системные (deploy/system/), для запуска
+# с пользовательскими юнитами задайте SYSTEMCTL="systemctl --user".
+SYSTEMCTL="${SYSTEMCTL:-systemctl}"
+
 problems=()
 
-systemctl --user is-active --quiet fastboard-bot.service \
+$SYSTEMCTL is-active --quiet fastboard-bot.service \
     || problems+=("бот не запущен (fastboard-bot.service)")
-systemctl --user is-active --quiet gpu-ollama-tunnel.service \
+$SYSTEMCTL is-active --quiet gpu-ollama-tunnel.service \
     || problems+=("туннель к GPU не поднят (gpu-ollama-tunnel.service)")
 curl -fsS -m 15 "$OLLAMA_URL/api/version" >/dev/null 2>&1 \
     || problems+=("модель недоступна: $OLLAMA_URL не отвечает")
 
+# Веб-API Фиби проверяем, только если его служба включена на этом сервере
+if $SYSTEMCTL is-enabled --quiet fastboard-web.service 2>/dev/null; then
+    curl -fsS -m 10 http://127.0.0.1:8080/health >/dev/null 2>&1 \
+        || problems+=("веб-API Фиби не отвечает (fastboard-web.service)")
+fi
+
 # Туннель, который часто переподключается, формально «active», но связь рвётся
-restarts=$(systemctl --user show gpu-ollama-tunnel.service -p NRestarts --value 2>/dev/null || echo 0)
-prev_restarts=$(cat "$STATE_DIR/watchdog-restarts" 2>/dev/null || echo "$restarts")
+restarts=$($SYSTEMCTL show gpu-ollama-tunnel.service -p NRestarts --value 2>/dev/null || echo 0)
+prev_restarts=$(cat "$STATE_DIR/watchdog-restarts" 2>/dev/null || true)
+# Пустой файл остаётся, если запись не удалась (например, на полном диске):
+# без этой проверки следующий запуск сравнил бы весь счётчик с нулём
+[[ "$prev_restarts" =~ ^[0-9]+$ ]] || prev_restarts=$restarts
 if [ "$restarts" -gt $((prev_restarts + 3)) ]; then
     problems+=("туннель переподключался $((restarts - prev_restarts)) раз с прошлой проверки")
 fi

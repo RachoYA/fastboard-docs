@@ -73,8 +73,9 @@ journalctl -u fastboard-docs-update.service -n 50
 # Боевая установка: локальная модель + Telegram-бот
 
 Так развёрнут сервер консультанта `89.232.184.218` (пользователь `racho`,
-каталог `~/fastboard-docs`). Root-прав не требуется: всё работает на
-пользовательском systemd (`systemctl --user`, включён `loginctl enable-linger`).
+каталог `~/fastboard-docs`). Службы системные и работают от имени `racho`:
+в `system.slice` за ними не следит systemd-oomd, которому на этом общем сервере
+разрешено убивать процессы внутри `user@.service`.
 
 ## Компоненты
 
@@ -82,11 +83,37 @@ journalctl -u fastboard-docs-update.service -n 50
 |---|---|
 | `gpu-ollama-tunnel.service` | SSH-туннель к Ollama на GPU-сервере → `127.0.0.1:11434` |
 | `fastboard-bot.service` | Telegram-бот `scripts/telegram_bot.py` |
-| `fastboard-web.service` | HTTP API виджета Фиби `scripts/web_api.py` → `:8080` |
-| `fastboard-docs-update.timer` | Ежедневный инкремент базы знаний в 03:00 |
+| `fastboard-web.service` | HTTP API виджета Фиби `scripts/web_api.py` → `127.0.0.1:8080` |
+| `fastboard-docs-update.timer` | Ежедневный инкремент базы знаний в 03:00, после него перезапуск бота и веб-API |
+| `fastboard-watchdog.timer` | Сторож, раз в 5 минут |
+| `fastboard-backup.timer` | Резервная копия, ежедневно в 04:30 |
 
-Файлы юнитов — в [`deploy/user/`](user/), раскладываются деплой-скриптом
-в `~/.config/systemd/user/`.
+Файлы юнитов — в [`deploy/system/`](system/). Ставит их разовая настройка под root,
+она же даёт деплою право перезапускать бота и веб-API без пароля
+(`/etc/sudoers.d/fastboard-deploy`):
+
+```bash
+sudo bash deploy/system/install.sh                   # юниты и право на перезапуск
+sudo bash deploy/system/install.sh fibi.grachia.ru   # + nginx и сертификат для API
+```
+
+Повторить её нужно после каждого изменения юнитов в репозитории: деплой
+сравнивает их с установленными и без этого останавливается с подсказкой.
+
+## API виджета Фиби
+
+Публичный адрес — `https://fibi.grachia.ru` (на сайте документации он задаётся
+как `FIBI_API_URL`). Наружу API открывает nginx
+([`system/nginx-fibi.conf`](system/nginx-fibi.conf)): ограничивает размер
+запроса и частоту запросов, передаёт приложению настоящий адрес клиента.
+Само приложение слушает только `127.0.0.1:8080`.
+
+| Метод | Назначение |
+|---|---|
+| `GET /health` | `chroma` и `ollama` — на месте ли база и модель |
+| `POST /chat/stream` | ответ потоком (SSE); просьба позвать человека — `[[HANDOFF]]` |
+| `POST /chat/handoff` | заявка специалисту, уходит сообщением в `ADMIN_CHAT_ID` |
+| `GET /chat/copy` | тексты виджета |
 
 
 Модель живёт на отдельной машине с A100 и слушает только localhost, поэтому

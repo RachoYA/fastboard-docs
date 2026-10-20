@@ -2,14 +2,17 @@
 # Развёртывание на сервере. Запускается из CI по SSH (см. .github/workflows/deploy.yml),
 # либо вручную: bash deploy/remote_deploy.sh
 #
-# Идемпотентно: обновляет код до origin/master, ставит зависимости, раскладывает
-# systemd-юниты пользователя и перезапускает бота. Файл .env, векторная база и
+# Обновляет код до origin/master, ставит зависимости и перезапускает бота и веб-API.
+# Службы системные (deploy/system/). Ставит их и даёт деплою право на перезапуск
+# разовая настройка под root: sudo bash deploy/system/install.sh — её же нужно
+# повторить, если юниты в репозитории изменились. Файл .env, векторная база и
 # логи живут на сервере и деплоем не затрагиваются.
 set -euo pipefail
 
 APP_DIR="${APP_DIR:-$HOME/fastboard-docs}"
 REPO="${REPO:-https://github.com/RachoYA/fastboard-docs.git}"
 BRANCH="${BRANCH:-master}"
+SYSTEMCTL=/usr/bin/systemctl   # путь должен совпадать с правилом в /etc/sudoers.d/fastboard-deploy
 
 if [ ! -d "$APP_DIR/.git" ]; then
     echo "→ Клонирую $REPO в $APP_DIR"
@@ -38,32 +41,42 @@ if [ ! -f .env ]; then
     exit 1
 fi
 
-echo "→ systemd-юниты пользователя"
-mkdir -p "$HOME/.config/systemd/user"
-cp deploy/user/*.service deploy/user/*.timer "$HOME/.config/systemd/user/"
-systemctl --user daemon-reload
-systemctl --user enable --now gpu-ollama-tunnel.service
-systemctl --user enable --now fastboard-docs-update.timer
-systemctl --user enable --now fastboard-watchdog.timer
-systemctl --user enable --now fastboard-backup.timer
-systemctl --user enable fastboard-bot.service
-systemctl --user enable fastboard-web.service
-systemctl --user restart fastboard-bot.service
-systemctl --user restart fastboard-web.service
+echo "→ Проверка кода"
+# Синтаксическая ошибка уронила бы бота сразу после перезапуска
+./.venv/bin/python -m py_compile scripts/*.py
+
+echo "→ Юниты systemd"
+stale=()
+for f in deploy/system/*.service deploy/system/*.timer; do
+    cmp -s "$f" "/etc/systemd/system/$(basename "$f")" || stale+=("$(basename "$f")")
+done
+[ -e /etc/sudoers.d/fastboard-deploy ] || stale+=("право на перезапуск (sudoers)")
+if [ ${#stale[@]} -gt 0 ]; then
+    echo "!! Код обновлён, но службы не перезапущены: на сервере устарело или"
+    echo "   отсутствует: ${stale[*]}"
+    echo "   Один раз под root: sudo bash $APP_DIR/deploy/system/install.sh"
+    exit 1
+fi
+
+echo "→ Перезапуск бота и веб-API"
+sudo -n "$SYSTEMCTL" restart fastboard-bot.service
+sudo -n "$SYSTEMCTL" restart fastboard-web.service
 
 echo "→ Проверка"
 sleep 6
-systemctl --user is-active gpu-ollama-tunnel.service >/dev/null \
-    || { echo "!! Туннель к GPU не поднялся"; systemctl --user status gpu-ollama-tunnel.service --no-pager -l | tail -20; exit 1; }
+systemctl is-active --quiet gpu-ollama-tunnel.service \
+    || { echo "!! Туннель к GPU не поднят"; systemctl status gpu-ollama-tunnel.service --no-pager -l | tail -20; exit 1; }
 curl -fsS -m 15 http://127.0.0.1:11434/api/version >/dev/null \
     || { echo "!! Ollama на GPU-сервере недоступна через туннель"; exit 1; }
-systemctl --user is-active fastboard-bot.service >/dev/null \
-    || { echo "!! Бот не запустился"; journalctl --user -u fastboard-bot.service -n 40 --no-pager; exit 1; }
-systemctl --user is-active fastboard-web.service >/dev/null \
-    || { echo "!! Веб-API Фиби не запустился"; journalctl --user -u fastboard-web.service -n 40 --no-pager; exit 1; }
-curl -fsS -m 10 http://127.0.0.1:8080/health >/dev/null \
-    || { echo "!! /health веб-API не отвечает"; exit 1; }
+systemctl is-active --quiet fastboard-bot.service \
+    || { echo "!! Бот не запустился"; journalctl -u fastboard-bot.service -n 40 --no-pager; exit 1; }
+for _ in $(seq 1 20); do
+    curl -fsS -m 5 http://127.0.0.1:8080/health >/dev/null 2>&1 && break
+    sleep 3
+done
+curl -fsS -m 5 http://127.0.0.1:8080/health >/dev/null \
+    || { echo "!! Веб-API Фиби не отвечает на /health"; journalctl -u fastboard-web.service -n 40 --no-pager; exit 1; }
 
 echo "✓ Готово: бот и веб-API работают, модель доступна"
-journalctl --user -u fastboard-bot.service -n 5 --no-pager
-journalctl --user -u fastboard-web.service -n 5 --no-pager
+journalctl -u fastboard-bot.service -n 5 --no-pager
+journalctl -u fastboard-web.service -n 5 --no-pager

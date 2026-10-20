@@ -1,0 +1,27 @@
+[Unit]
+Description=Telegram-бот AI-консультанта Fastboard/ClickHouse
+Documentation=file:///home/racho/fastboard-docs/README.md
+After=network-online.target gpu-ollama-tunnel.service
+Wants=network-online.target gpu-ollama-tunnel.service
+# Никогда не сдаваться: без этого пять быстрых падений подряд оставили бы службу в failed
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=racho
+Group=racho
+WorkingDirectory=/home/racho/fastboard-docs
+Environment=PYTHONUNBUFFERED=1
+Environment=HOME=/home/racho
+ExecStart=/home/racho/fastboard-docs/.venv/bin/python /home/racho/fastboard-docs/scripts/telegram_bot.py
+Restart=always
+RestartSec=10
+# Служба живёт в system.slice, где systemd-oomd не сторожит давление памяти
+# (kill выставлен только для user@.service). Дополнительно просим обходить её
+# и при отборе жертвы ядерным OOM-киллером.
+ManagedOOMPreference=avoid
+OOMScoreAdjust=-100
+OOMPolicy=continue
+
+[Install]
+WantedBy=multi-user.target

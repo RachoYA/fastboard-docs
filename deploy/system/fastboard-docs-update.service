@@ -1,0 +1,16 @@
+[Unit]
+Description=Инкрементальное обновление базы знаний Fastboard/ClickHouse
+Wants=gpu-ollama-tunnel.service
+
+[Service]
+Type=oneshot
+User=racho
+Group=racho
+WorkingDirectory=/home/racho/fastboard-docs
+Environment=HOME=/home/racho
+ExecStart=/home/racho/fastboard-docs/scripts/daily_update.sh
+# Бот и веб-API держат коллекции ChromaDB открытыми и после переиндексации
+# продолжали бы отвечать по старому индексу до ближайшего перезапуска.
+# Префикс "+" — команда идёт от root: racho не вправе перезапускать системную службу.
+ExecStartPost=+/usr/bin/systemctl restart fastboard-bot.service
+ExecStartPost=+/usr/bin/systemctl restart fastboard-web.service

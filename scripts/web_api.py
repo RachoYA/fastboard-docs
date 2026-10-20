@@ -49,6 +49,9 @@ CORS_ORIGINS = [
     if o.strip()
 ]
 WEB_RATE_LIMIT = int(os.environ.get("WEB_RATE_LIMIT_PER_HOUR", "60"))
+# Каждое обращение уходит сообщением в ADMIN_CHAT_ID: без предела форму можно
+# использовать для рассылки в чат администратора
+WEB_HANDOFF_LIMIT = int(os.environ.get("WEB_HANDOFF_LIMIT_PER_HOUR", "5"))
 ADMIN_CHAT_ID = os.environ.get("ADMIN_CHAT_ID", "").strip()
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
 SPEND_LIMIT_ALERT = int(os.environ.get("SPEND_LIMIT_ALERT", "0"))
@@ -100,6 +103,7 @@ class IpRateLimiter:
 
 
 limiter = IpRateLimiter(WEB_RATE_LIMIT)
+handoff_limiter = IpRateLimiter(WEB_HANDOFF_LIMIT)
 _spend_lock = threading.Lock()
 _spend_alerted_day: Optional[str] = None
 
@@ -217,7 +221,7 @@ def chat_copy():
 
 
 @app.post("/chat/handoff")
-def chat_handoff(body: HandoffBody):
+def chat_handoff(body: HandoffBody, request: Request):
     name = body.name.strip()
     phone = body.phone.strip()
     email = body.email.strip()
@@ -232,6 +236,9 @@ def chat_handoff(body: HandoffBody):
         raise HTTPException(status_code=400, detail={"error": "bad_phone"})
     if not ADMIN_CHAT_ID or not TELEGRAM_BOT_TOKEN:
         raise HTTPException(status_code=503, detail={"error": "handoff_unavailable"})
+    # Считаем только заполненные формы: опечатка в телефоне не тратит лимит
+    if not handoff_limiter.allow(client_ip(request)):
+        return JSONResponse(status_code=429, content={"error": "rate_limited"})
     if not deliver_handoff(body):
         raise HTTPException(status_code=502, detail={"error": "handoff_failed"})
     return Response(status_code=204)

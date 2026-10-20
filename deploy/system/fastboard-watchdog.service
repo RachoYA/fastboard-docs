@@ -1,0 +1,12 @@
+[Unit]
+Description=Сторож консультанта Fastboard: бот, туннель к GPU, место на диске
+
+[Service]
+Type=oneshot
+User=racho
+Group=racho
+WorkingDirectory=/home/racho/fastboard-docs
+Environment=HOME=/home/racho
+# Службы теперь системные — сторож должен спрашивать системный systemd, а не пользовательский
+Environment=SYSTEMCTL=systemctl
+ExecStart=/home/racho/fastboard-docs/scripts/watchdog.sh

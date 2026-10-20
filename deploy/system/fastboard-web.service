@@ -1,0 +1,24 @@
+[Unit]
+Description=HTTP API виджета Фиби на сайте документации Fastboard
+Documentation=file:///home/racho/fastboard-docs/README.md
+After=network-online.target gpu-ollama-tunnel.service
+Wants=network-online.target gpu-ollama-tunnel.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=racho
+Group=racho
+WorkingDirectory=/home/racho/fastboard-docs
+Environment=PYTHONUNBUFFERED=1
+Environment=HOME=/home/racho
+# Только локальный адрес: снаружи API открывает nginx (deploy/system/nginx-fibi.conf),
+# он же ограничивает размер запросов и передаёт настоящий адрес клиента для лимита.
+ExecStart=/home/racho/fastboard-docs/.venv/bin/uvicorn web_api:app \
+  --app-dir /home/racho/fastboard-docs/scripts \
+  --host 127.0.0.1 --port 8080 --no-server-header
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
