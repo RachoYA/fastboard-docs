@@ -11,11 +11,14 @@ qwen3.6 отдаёт пустой ответ.
 
 import base64
 import json
+import logging
 import os
 import re
 import time
 
 import requests
+
+log = logging.getLogger("fb-rag")
 
 try:
     from dotenv import load_dotenv
@@ -90,13 +93,16 @@ def ollama_chat(messages, images=None, model=None, num_predict=None, temperature
         resp = requests.post(
             f"{OLLAMA_URL}/api/chat",
             json={"model": model or CHAT_MODEL, "messages": msgs,
-                  "stream": False, "think": False, "options": options},
+                  "stream": False, "think": False, "keep_alive": -1,
+                  "options": options},
             timeout=(15, LLM_TIMEOUT),
         )
         resp.raise_for_status()
         return resp
 
-    content = (_with_retry(call, "ответ").json().get("message") or {}).get("content", "")
+    body = _with_retry(call, "ответ").json()
+    _log_ollama(body, None)
+    content = (body.get("message") or {}).get("content", "")
     return re.sub(r"<think>.*?</think>", "", content, flags=re.S).strip()
 
 
@@ -115,12 +121,16 @@ def ollama_chat_stream(messages, model=None, num_predict=None, temperature=None,
         options["num_ctx"] = int(NUM_CTX)
 
     parts = []
+    started = time.perf_counter()
+    first = None
+    done = {}
 
     def open_stream():
         return requests.post(
             f"{OLLAMA_URL}/api/chat",
             json={"model": model or CHAT_MODEL, "messages": [dict(m) for m in messages],
-                  "stream": True, "think": False, "options": options},
+                  "stream": True, "think": False, "keep_alive": -1,
+                  "options": options},
             timeout=(15, LLM_TIMEOUT), stream=True)
 
     # Повтор имеет смысл только пока не пришло ни одного куска ответа:
@@ -136,6 +146,8 @@ def ollama_chat_stream(messages, model=None, num_predict=None, temperature=None,
                 continue
             piece = (chunk.get("message") or {}).get("content", "")
             if piece:
+                if first is None:
+                    first = time.perf_counter() - started
                 parts.append(piece)
                 if on_delta:
                     try:
@@ -145,8 +157,21 @@ def ollama_chat_stream(messages, model=None, num_predict=None, temperature=None,
                     if keep is False:
                         break
             if chunk.get("done"):
+                done = chunk
                 break
+    _log_ollama(done, first)
     return re.sub(r"<think>.*?</think>", "", "".join(parts), flags=re.S).strip()
+
+
+def _log_ollama(body, first_s):
+    if not body:
+        return
+    log.info(
+        "ollama first=%.2fs prompt_eval=%.2fs eval=%.2fs",
+        -1 if first_s is None else first_s,
+        (body.get("prompt_eval_duration") or 0) / 1e9,
+        (body.get("eval_duration") or 0) / 1e9,
+    )
 
 
 def describe_image(image_bytes, hint=""):

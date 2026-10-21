@@ -44,7 +44,7 @@ log = logging.getLogger("fb-web")
 CORS_ORIGINS = [
     o.strip() for o in os.environ.get(
         "CORS_ORIGINS",
-        "https://help.fastboard.online,http://localhost:3000",
+        "https://help.fastboard.online,http://localhost:3000,https://users-docs-dev.fb-dev.winsolutions.ru",
     ).split(",")
     if o.strip()
 ]
