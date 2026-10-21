@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import threading
 from typing import Callable, Optional
 
@@ -17,6 +18,14 @@ from vision import ollama_chat, ollama_chat_stream
 log = logging.getLogger("fb-rag")
 
 WEB_HISTORY_TURNS = int(os.environ.get("WEB_HISTORY_TURNS", os.environ.get("HISTORY_TURNS", "6")))
+_GREETING = re.compile(
+    r"^(?:привет|здравствуйте|здравствуй|hello|hi|hey)(?:[!?.…,\s]+)?$",
+    re.IGNORECASE,
+)
+WEB_HELLO = (
+    "Здравствуйте! Я Фиби — AI-консультант Fastboard. "
+    "Опишите, что хотите сделать или с чем возникла проблема."
+)
 
 _rag = None
 _rag_lock = threading.Lock()
@@ -161,6 +170,10 @@ def answer_stream(
     q = (question or "").strip()
     if not q:
         return ""
+    if _GREETING.match(q):
+        if on_delta:
+            on_delta(WEB_HELLO)
+        return WEB_HELLO
     if is_specialist_request(q):
         if on_delta:
             on_delta(HANDOFF_MARK)
