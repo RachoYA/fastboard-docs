@@ -9,7 +9,7 @@ Type=simple
 User=racho
 Group=racho
 Environment=HOME=/home/racho
-ExecStart=/usr/bin/ssh -NT \
+ExecStart=/usr/bin/ssh -F /home/racho/.ssh/gpu-relay-config -NT \
   -o BatchMode=yes -o StrictHostKeyChecking=accept-new \
   -o ExitOnForwardFailure=yes \
   -o ServerAliveInterval=20 -o ServerAliveCountMax=3 \
