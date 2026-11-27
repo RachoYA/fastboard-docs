@@ -43,10 +43,12 @@ fi
 
 LLM_BACKEND=$(sed -n 's/^LLM_BACKEND=//p' .env | tail -1 | tr -d '"')
 VLLM_BASE_URL=$(sed -n 's/^VLLM_BASE_URL=//p' .env | tail -1 | tr -d '"')
+VLLM_MODEL=$(sed -n 's/^VLLM_MODEL=//p' .env | tail -1 | tr -d '"')
 VLLM_API_KEY=$(sed -n 's/^VLLM_API_KEY=//p' .env | tail -1 | tr -d '"')
 LLM_BACKEND="${LLM_BACKEND:-ollama}"
 VLLM_BASE_URL="${VLLM_BASE_URL:-http://127.0.0.1:8000/v1}"
 VLLM_BASE_URL="${VLLM_BASE_URL%/}"
+VLLM_MODEL="${VLLM_MODEL:-}"
 
 echo "→ Проверка кода"
 # Синтаксическая ошибка уронила бы бота сразу после перезапуска
@@ -76,13 +78,17 @@ systemctl is-active --quiet gpu-ollama-tunnel.service \
 curl -fsS -m 15 http://127.0.0.1:11434/api/version >/dev/null \
     || { echo "!! Ollama на GPU-сервере недоступна через туннель"; exit 1; }
 if [ "$LLM_BACKEND" = "vllm" ]; then
+    [ -n "$VLLM_MODEL" ] || { echo "!! VLLM_MODEL не задан"; exit 1; }
+    vllm_payload=$(printf '{"model":"%s","messages":[{"role":"user","content":"ping"}],"max_tokens":1}' "$VLLM_MODEL")
     if [ -n "${VLLM_API_KEY:-}" ]; then
-        curl -fsS -m 15 -H "Authorization: Bearer $VLLM_API_KEY" \
-            "$VLLM_BASE_URL/models" >/dev/null \
-            || { echo "!! vLLM на GPU-сервере недоступен через туннель"; exit 1; }
+        curl -fsS -m 20 -H "Authorization: Bearer $VLLM_API_KEY" \
+            -H "Content-Type: application/json" --data "$vllm_payload" \
+            "$VLLM_BASE_URL/chat/completions" >/dev/null \
+            || { echo "!! vLLM недоступен: $VLLM_BASE_URL"; exit 1; }
     else
-        curl -fsS -m 15 "$VLLM_BASE_URL/models" >/dev/null \
-            || { echo "!! vLLM на GPU-сервере недоступен через туннель"; exit 1; }
+        curl -fsS -m 20 -H "Content-Type: application/json" --data "$vllm_payload" \
+            "$VLLM_BASE_URL/chat/completions" >/dev/null \
+            || { echo "!! vLLM недоступен: $VLLM_BASE_URL"; exit 1; }
     fi
 fi
 systemctl is-active --quiet fastboard-bot.service \
