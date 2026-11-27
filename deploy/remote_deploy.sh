@@ -41,6 +41,12 @@ if [ ! -f .env ]; then
     exit 1
 fi
 
+LLM_BACKEND=$(sed -n 's/^LLM_BACKEND=//p' .env | tail -1 | tr -d '"')
+VLLM_BASE_URL=$(sed -n 's/^VLLM_BASE_URL=//p' .env | tail -1 | tr -d '"')
+LLM_BACKEND="${LLM_BACKEND:-ollama}"
+VLLM_BASE_URL="${VLLM_BASE_URL:-http://127.0.0.1:8000/v1}"
+VLLM_BASE_URL="${VLLM_BASE_URL%/}"
+
 echo "→ Проверка кода"
 # Синтаксическая ошибка уронила бы бота сразу после перезапуска
 ./.venv/bin/python -m py_compile scripts/*.py
@@ -68,6 +74,10 @@ systemctl is-active --quiet gpu-ollama-tunnel.service \
     || { echo "!! Туннель к GPU не поднят"; systemctl status gpu-ollama-tunnel.service --no-pager -l | tail -20; exit 1; }
 curl -fsS -m 15 http://127.0.0.1:11434/api/version >/dev/null \
     || { echo "!! Ollama на GPU-сервере недоступна через туннель"; exit 1; }
+if [ "$LLM_BACKEND" = "vllm" ]; then
+    curl -fsS -m 15 "$VLLM_BASE_URL/models" >/dev/null \
+        || { echo "!! vLLM на GPU-сервере недоступен через туннель"; exit 1; }
+fi
 systemctl is-active --quiet fastboard-bot.service \
     || { echo "!! Бот не запустился"; journalctl -u fastboard-bot.service -n 40 --no-pager; exit 1; }
 for _ in $(seq 1 20); do

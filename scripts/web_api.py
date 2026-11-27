@@ -35,7 +35,7 @@ from pydantic import BaseModel, Field
 from handoff import HANDOFF_MARK, is_handoff
 from rag_common import VECTORDB_DIR
 from rag_service import answer_stream
-from vision import OLLAMA_URL
+from vision import LLM_BACKEND, OLLAMA_URL, VLLM_BASE_URL
 import web_copy
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -207,11 +207,24 @@ def health():
         ollama_ok = r.ok
     except requests.RequestException:
         pass
-    status = "ok" if chroma_ok else "degraded"
+
+    # Ollama still serves embeddings and images after the chat cutover.
+    vllm_ok = False
+    if LLM_BACKEND == "vllm":
+        try:
+            r = requests.get(f"{VLLM_BASE_URL}/models", timeout=5)
+            vllm_ok = r.ok
+        except requests.RequestException:
+            pass
+
+    llm_ok = vllm_ok if LLM_BACKEND == "vllm" else ollama_ok
+    status = "ok" if chroma_ok and ollama_ok and llm_ok else "degraded"
     return {
         "status": status,
         "chroma": chroma_ok,
         "ollama": ollama_ok,
+        "llm_backend": LLM_BACKEND,
+        "vllm": vllm_ok,
     }
 
 
