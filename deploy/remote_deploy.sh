@@ -43,6 +43,7 @@ fi
 
 LLM_BACKEND=$(sed -n 's/^LLM_BACKEND=//p' .env | tail -1 | tr -d '"')
 VLLM_BASE_URL=$(sed -n 's/^VLLM_BASE_URL=//p' .env | tail -1 | tr -d '"')
+VLLM_API_KEY=$(sed -n 's/^VLLM_API_KEY=//p' .env | tail -1 | tr -d '"')
 LLM_BACKEND="${LLM_BACKEND:-ollama}"
 VLLM_BASE_URL="${VLLM_BASE_URL:-http://127.0.0.1:8000/v1}"
 VLLM_BASE_URL="${VLLM_BASE_URL%/}"
@@ -75,8 +76,14 @@ systemctl is-active --quiet gpu-ollama-tunnel.service \
 curl -fsS -m 15 http://127.0.0.1:11434/api/version >/dev/null \
     || { echo "!! Ollama на GPU-сервере недоступна через туннель"; exit 1; }
 if [ "$LLM_BACKEND" = "vllm" ]; then
-    curl -fsS -m 15 "$VLLM_BASE_URL/models" >/dev/null \
-        || { echo "!! vLLM на GPU-сервере недоступен через туннель"; exit 1; }
+    if [ -n "${VLLM_API_KEY:-}" ]; then
+        curl -fsS -m 15 -H "Authorization: Bearer $VLLM_API_KEY" \
+            "$VLLM_BASE_URL/models" >/dev/null \
+            || { echo "!! vLLM на GPU-сервере недоступен через туннель"; exit 1; }
+    else
+        curl -fsS -m 15 "$VLLM_BASE_URL/models" >/dev/null \
+            || { echo "!! vLLM на GPU-сервере недоступен через туннель"; exit 1; }
+    fi
 fi
 systemctl is-active --quiet fastboard-bot.service \
     || { echo "!! Бот не запустился"; journalctl -u fastboard-bot.service -n 40 --no-pager; exit 1; }

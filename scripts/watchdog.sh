@@ -20,6 +20,7 @@ if [ -f .env ]; then
     OLLAMA_URL=$(grep -E '^OLLAMA_URL=' .env | cut -d= -f2- | tr -d '"' || true)
     LLM_BACKEND=$(grep -E '^LLM_BACKEND=' .env | cut -d= -f2- | tr -d '"' || true)
     VLLM_BASE_URL=$(grep -E '^VLLM_BASE_URL=' .env | cut -d= -f2- | tr -d '"' || true)
+    VLLM_API_KEY=$(grep -E '^VLLM_API_KEY=' .env | cut -d= -f2- | tr -d '"' || true)
 fi
 OLLAMA_URL="${OLLAMA_URL:-http://127.0.0.1:11434}"
 LLM_BACKEND="${LLM_BACKEND:-ollama}"
@@ -40,8 +41,14 @@ curl -fsS -m 15 "$OLLAMA_URL/api/version" >/dev/null 2>&1 \
     || problems+=("модель недоступна: $OLLAMA_URL не отвечает")
 
 if [ "$LLM_BACKEND" = "vllm" ]; then
-    curl -fsS -m 15 "$VLLM_BASE_URL/models" >/dev/null 2>&1 \
-        || problems+=("vLLM недоступен: $VLLM_BASE_URL не отвечает")
+    if [ -n "${VLLM_API_KEY:-}" ]; then
+        curl -fsS -m 15 -H "Authorization: Bearer $VLLM_API_KEY" \
+            "$VLLM_BASE_URL/models" >/dev/null 2>&1 \
+            || problems+=("vLLM недоступен: $VLLM_BASE_URL не отвечает")
+    else
+        curl -fsS -m 15 "$VLLM_BASE_URL/models" >/dev/null 2>&1 \
+            || problems+=("vLLM недоступен: $VLLM_BASE_URL не отвечает")
+    fi
 fi
 
 # Веб-API Фиби проверяем, только если его служба включена на этом сервере
