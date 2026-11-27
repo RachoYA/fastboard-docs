@@ -18,8 +18,16 @@ if [ -f .env ]; then
     TELEGRAM_BOT_TOKEN=$(grep -E '^TELEGRAM_BOT_TOKEN=' .env | cut -d= -f2- | tr -d '"')
     ADMIN_CHAT_ID=$(grep -E '^ADMIN_CHAT_ID=' .env | cut -d= -f2- | tr -d '"' || true)
     OLLAMA_URL=$(grep -E '^OLLAMA_URL=' .env | cut -d= -f2- | tr -d '"' || true)
+    LLM_BACKEND=$(grep -E '^LLM_BACKEND=' .env | cut -d= -f2- | tr -d '"' || true)
+    VLLM_BASE_URL=$(grep -E '^VLLM_BASE_URL=' .env | cut -d= -f2- | tr -d '"' || true)
+    VLLM_MODEL=$(grep -E '^VLLM_MODEL=' .env | cut -d= -f2- | tr -d '"' || true)
+    VLLM_API_KEY=$(grep -E '^VLLM_API_KEY=' .env | cut -d= -f2- | tr -d '"' || true)
 fi
 OLLAMA_URL="${OLLAMA_URL:-http://127.0.0.1:11434}"
+LLM_BACKEND="${LLM_BACKEND:-ollama}"
+VLLM_BASE_URL="${VLLM_BASE_URL:-http://127.0.0.1:8000/v1}"
+VLLM_BASE_URL="${VLLM_BASE_URL%/}"
+VLLM_MODEL="${VLLM_MODEL:-}"
 
 # Какой systemd спрашивать: службы системные (deploy/system/), для запуска
 # с пользовательскими юнитами задайте SYSTEMCTL="systemctl --user".
@@ -33,6 +41,24 @@ $SYSTEMCTL is-active --quiet gpu-ollama-tunnel.service \
     || problems+=("туннель к GPU не поднят (gpu-ollama-tunnel.service)")
 curl -fsS -m 15 "$OLLAMA_URL/api/version" >/dev/null 2>&1 \
     || problems+=("модель недоступна: $OLLAMA_URL не отвечает")
+
+if [ "$LLM_BACKEND" = "vllm" ]; then
+    if [ -z "$VLLM_MODEL" ]; then
+        problems+=("VLLM_MODEL не задан")
+    else
+        vllm_payload=$(printf '{"model":"%s","messages":[{"role":"user","content":"ping"}],"max_tokens":1}' "$VLLM_MODEL")
+        if [ -n "${VLLM_API_KEY:-}" ]; then
+            curl -fsS -m 20 -H "Authorization: Bearer $VLLM_API_KEY" \
+                -H "Content-Type: application/json" --data "$vllm_payload" \
+                "$VLLM_BASE_URL/chat/completions" >/dev/null 2>&1 \
+                || problems+=("vLLM недоступен: $VLLM_BASE_URL")
+        else
+            curl -fsS -m 20 -H "Content-Type: application/json" --data "$vllm_payload" \
+                "$VLLM_BASE_URL/chat/completions" >/dev/null 2>&1 \
+                || problems+=("vLLM недоступен: $VLLM_BASE_URL")
+        fi
+    fi
+fi
 
 # Веб-API Фиби проверяем, только если его служба включена на этом сервере
 if $SYSTEMCTL is-enabled --quiet fastboard-web.service 2>/dev/null; then
