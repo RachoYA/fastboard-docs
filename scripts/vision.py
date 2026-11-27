@@ -41,6 +41,9 @@ LLM_TIMEOUT = float(os.environ.get("LLM_TIMEOUT", "240"))
 LLM_BACKEND = os.environ.get("LLM_BACKEND", "ollama").strip().lower() or "ollama"
 VLLM_BASE_URL = os.environ.get("VLLM_BASE_URL", "http://127.0.0.1:8000/v1").rstrip("/")
 VLLM_MODEL = os.environ.get("VLLM_MODEL", "").strip()
+VLLM_API_KEY = os.environ.get("VLLM_API_KEY", "").strip()
+# Shared gateways require a Bearer token; a local vLLM usually has none.
+VLLM_AUTH_HEADERS = {"Authorization": f"Bearer {VLLM_API_KEY}"} if VLLM_API_KEY else {}
 
 DESCRIBE_PROMPT = (
     "Внимательно изучи изображение. Ответь на русском языке строго в таком формате:\n\n"
@@ -211,6 +214,7 @@ def _vllm_chat(messages, model=None, num_predict=None, temperature=None):
         resp = requests.post(
             f"{VLLM_BASE_URL}/chat/completions",
             json=_vllm_body(messages, model, num_predict, temperature, False),
+            headers=VLLM_AUTH_HEADERS,
             timeout=(15, LLM_TIMEOUT),
         )
         resp.raise_for_status()
@@ -226,6 +230,7 @@ def _vllm_chat_stream(messages, model=None, num_predict=None, temperature=None, 
         return requests.post(
             f"{VLLM_BASE_URL}/chat/completions",
             json=_vllm_body(messages, model, num_predict, temperature, True),
+            headers=VLLM_AUTH_HEADERS,
             timeout=(15, LLM_TIMEOUT),
             stream=True,
         )

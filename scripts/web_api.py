@@ -35,7 +35,7 @@ from pydantic import BaseModel, Field
 from handoff import HANDOFF_MARK, is_handoff
 from rag_common import VECTORDB_DIR
 from rag_service import answer_stream
-from vision import LLM_BACKEND, OLLAMA_URL, VLLM_BASE_URL
+from vision import LLM_BACKEND, OLLAMA_URL, VLLM_AUTH_HEADERS, VLLM_BASE_URL
 import web_copy
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -212,7 +212,7 @@ def health():
     vllm_ok = False
     if LLM_BACKEND == "vllm":
         try:
-            r = requests.get(f"{VLLM_BASE_URL}/models", timeout=5)
+            r = requests.get(f"{VLLM_BASE_URL}/models", headers=VLLM_AUTH_HEADERS, timeout=5)
             vllm_ok = r.ok
         except requests.RequestException:
             pass
